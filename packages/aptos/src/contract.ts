@@ -70,9 +70,11 @@ export class StreamLockContract {
     const userTxn = response as UserTransactionResponse;
 
     if (!userTxn.success) {
-      throw ContractError.fromAbortCode(
-        parseInt(userTxn.vm_status.split('code ')[1] || '0')
-      );
+      // Improved error parsing with regex
+      const abortCodeMatch = userTxn.vm_status.match(/abort code: (\d+)/i)
+        || userTxn.vm_status.match(/code (\d+)/);
+      const abortCode = abortCodeMatch ? parseInt(abortCodeMatch[1], 10) : 0;
+      throw ContractError.fromAbortCode(abortCode);
     }
 
     return {
@@ -198,6 +200,14 @@ export class StreamLockContract {
     });
   }
 
+  /** Withdraw protocol fees (admin only) */
+  async withdrawProtocolFees(signer: Account): Promise<TransactionResult> {
+    return this.executeTransaction(signer, {
+      function: this.functionId('withdraw_protocol_fees'),
+      functionArguments: [],
+    });
+  }
+
   // ============ View Functions ============
 
   /** Get video details */
@@ -210,6 +220,12 @@ export class StreamLockContract {
         },
       });
 
+      // Validate response array length
+      if (!Array.isArray(result) || result.length < 8) {
+        console.error('Invalid video response format:', result);
+        return null;
+      }
+
       const [
         creator,
         contentUri,
@@ -221,21 +237,28 @@ export class StreamLockContract {
         isActive,
       ] = result as [string, string, string, string, string, number[], string, boolean];
 
+      // Validate keyCommitmentRoot is an array
+      if (!Array.isArray(keyCommitmentRoot)) {
+        console.error('Invalid keyCommitmentRoot format:', keyCommitmentRoot);
+        return null;
+      }
+
       return {
         videoId,
         creator,
         contentUri,
         thumbnailUri,
-        durationSeconds: parseInt(durationSeconds),
-        totalSegments: parseInt(totalSegments),
+        durationSeconds: parseInt(String(durationSeconds), 10),
+        totalSegments: parseInt(String(totalSegments), 10),
         keyCommitmentRoot: Buffer.from(keyCommitmentRoot).toString('hex'),
         pricePerSegment: BigInt(pricePerSegment),
         totalViews: 0, // Not returned by view function
         totalEarnings: 0n, // Not returned by view function
-        isActive,
+        isActive: Boolean(isActive),
         createdAt: 0, // Not returned by view function
       };
-    } catch {
+    } catch (error) {
+      console.error('Failed to get video:', error);
       return null;
     }
   }
@@ -249,6 +272,12 @@ export class StreamLockContract {
           functionArguments: [sessionId],
         },
       });
+
+      // Validate response array length
+      if (!Array.isArray(result) || result.length < 7) {
+        console.error('Invalid session response format:', result);
+        return null;
+      }
 
       const [
         videoId,
@@ -265,14 +294,15 @@ export class StreamLockContract {
         videoId,
         viewer,
         creator,
-        segmentsPaid: parseInt(segmentsPaid),
+        segmentsPaid: parseInt(String(segmentsPaid), 10),
         prepaidBalance: BigInt(prepaidBalance),
         totalPaid: BigInt(totalPaid),
         startedAt: 0, // Not returned by view function
         expiresAt: 0, // Not returned by view function
-        isActive,
+        isActive: Boolean(isActive),
       };
-    } catch {
+    } catch (error) {
+      console.error('Failed to get session:', error);
       return null;
     }
   }
@@ -287,6 +317,12 @@ export class StreamLockContract {
         },
       });
 
+      // Validate response array length
+      if (!Array.isArray(result) || result.length < 3) {
+        console.error('Invalid creator response format:', result);
+        return null;
+      }
+
       const [totalEarnings, pendingWithdrawal, totalVideos] = result as [
         string,
         string,
@@ -296,11 +332,12 @@ export class StreamLockContract {
       return {
         totalEarnings: BigInt(totalEarnings),
         pendingWithdrawal: BigInt(pendingWithdrawal),
-        totalVideos: parseInt(totalVideos),
+        totalVideos: parseInt(String(totalVideos), 10),
         registeredAt: 0,
         metadataUri: '',
       };
-    } catch {
+    } catch (error) {
+      console.error('Failed to get creator:', error);
       return null;
     }
   }
@@ -326,7 +363,31 @@ export class StreamLockContract {
       },
     });
 
-    return result[0] as boolean;
+    return Boolean(result[0]);
+  }
+
+  /** Get escrow address */
+  async getEscrowAddress(): Promise<string> {
+    const result = await this.client.view({
+      payload: {
+        function: this.functionId('get_escrow_address'),
+        functionArguments: [],
+      },
+    });
+
+    return result[0] as string;
+  }
+
+  /** Get total protocol fees */
+  async getProtocolFees(): Promise<bigint> {
+    const result = await this.client.view({
+      payload: {
+        function: this.functionId('get_protocol_fees'),
+        functionArguments: [],
+      },
+    });
+
+    return BigInt(result[0] as string);
   }
 }
 

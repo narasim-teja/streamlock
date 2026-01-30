@@ -9,8 +9,11 @@ import type { ContractEvent } from './types.js';
 export const EVENT_TYPES = {
   CREATOR_REGISTERED: 'CreatorRegisteredEvent',
   VIDEO_REGISTERED: 'VideoRegisteredEvent',
+  VIDEO_PRICE_UPDATED: 'VideoPriceUpdatedEvent',
+  VIDEO_DEACTIVATED: 'VideoDeactivatedEvent',
   SESSION_STARTED: 'SessionStartedEvent',
   SEGMENT_PAID: 'SegmentPaidEvent',
+  SESSION_TOPPED_UP: 'SessionToppedUpEvent',
   SESSION_ENDED: 'SessionEndedEvent',
   EARNINGS_WITHDRAWN: 'EarningsWithdrawnEvent',
 } as const;
@@ -24,6 +27,39 @@ export function parseTransactionEvents(events: Event[]): ContractEvent[] {
   }));
 }
 
+/** Helper to safely parse event data field */
+function safeParseField<T>(data: Record<string, unknown>, field: string, defaultValue: T): T {
+  const value = data[field];
+  if (value === undefined || value === null) {
+    console.warn(`Missing event field: ${field}`);
+    return defaultValue;
+  }
+  return value as T;
+}
+
+/** Helper to safely parse numeric string */
+function safeParseInt(value: unknown, defaultValue = 0): number {
+  if (value === undefined || value === null) return defaultValue;
+  const parsed = parseInt(String(value), 10);
+  return isNaN(parsed) ? defaultValue : parsed;
+}
+
+/** Helper to safely parse bigint */
+function safeParseBigInt(value: unknown, defaultValue = 0n): bigint {
+  if (value === undefined || value === null) return defaultValue;
+  try {
+    return BigInt(String(value));
+  } catch {
+    return defaultValue;
+  }
+}
+
+/** Check if event type matches (handles full module path) */
+function matchesEventType(eventType: string, expectedType: string): boolean {
+  // Handle both short name and full module path
+  return eventType.endsWith(`::${expectedType}`) || eventType === expectedType;
+}
+
 /** Extract VideoRegistered event data */
 export function parseVideoRegisteredEvent(event: ContractEvent): {
   videoId: string;
@@ -33,18 +69,72 @@ export function parseVideoRegisteredEvent(event: ContractEvent): {
   commitmentRoot: string;
   timestamp: number;
 } | null {
-  if (!event.type.includes(EVENT_TYPES.VIDEO_REGISTERED)) {
+  if (!matchesEventType(event.type, EVENT_TYPES.VIDEO_REGISTERED)) {
+    return null;
+  }
+
+  const data = event.data;
+
+  // Validate required fields exist
+  if (!data.video_id || !data.creator) {
+    console.error('Missing required fields in VideoRegisteredEvent:', data);
+    return null;
+  }
+
+  // Safely parse commitment root
+  let commitmentRoot = '';
+  const rawRoot = data.commitment_root;
+  if (Array.isArray(rawRoot)) {
+    try {
+      commitmentRoot = Buffer.from(rawRoot as number[]).toString('hex');
+    } catch (e) {
+      console.error('Failed to parse commitment_root:', e);
+    }
+  }
+
+  return {
+    videoId: String(data.video_id),
+    creator: String(data.creator),
+    totalSegments: safeParseInt(data.total_segments),
+    pricePerSegment: safeParseBigInt(data.price_per_segment),
+    commitmentRoot,
+    timestamp: safeParseInt(data.timestamp),
+  };
+}
+
+/** Extract VideoPriceUpdated event data */
+export function parseVideoPriceUpdatedEvent(event: ContractEvent): {
+  videoId: string;
+  oldPrice: bigint;
+  newPrice: bigint;
+  timestamp: number;
+} | null {
+  if (!matchesEventType(event.type, EVENT_TYPES.VIDEO_PRICE_UPDATED)) {
     return null;
   }
 
   const data = event.data;
   return {
-    videoId: data.video_id as string,
-    creator: data.creator as string,
-    totalSegments: parseInt(data.total_segments as string),
-    pricePerSegment: BigInt(data.price_per_segment as string),
-    commitmentRoot: Buffer.from(data.commitment_root as number[]).toString('hex'),
-    timestamp: parseInt(data.timestamp as string),
+    videoId: String(safeParseField(data, 'video_id', '')),
+    oldPrice: safeParseBigInt(data.old_price),
+    newPrice: safeParseBigInt(data.new_price),
+    timestamp: safeParseInt(data.timestamp),
+  };
+}
+
+/** Extract VideoDeactivated event data */
+export function parseVideoDeactivatedEvent(event: ContractEvent): {
+  videoId: string;
+  timestamp: number;
+} | null {
+  if (!matchesEventType(event.type, EVENT_TYPES.VIDEO_DEACTIVATED)) {
+    return null;
+  }
+
+  const data = event.data;
+  return {
+    videoId: String(safeParseField(data, 'video_id', '')),
+    timestamp: safeParseInt(data.timestamp),
   };
 }
 
@@ -56,17 +146,17 @@ export function parseSessionStartedEvent(event: ContractEvent): {
   prepaidAmount: bigint;
   timestamp: number;
 } | null {
-  if (!event.type.includes(EVENT_TYPES.SESSION_STARTED)) {
+  if (!matchesEventType(event.type, EVENT_TYPES.SESSION_STARTED)) {
     return null;
   }
 
   const data = event.data;
   return {
-    sessionId: data.session_id as string,
-    videoId: data.video_id as string,
-    viewer: data.viewer as string,
-    prepaidAmount: BigInt(data.prepaid_amount as string),
-    timestamp: parseInt(data.timestamp as string),
+    sessionId: String(safeParseField(data, 'session_id', '')),
+    videoId: String(safeParseField(data, 'video_id', '')),
+    viewer: String(safeParseField(data, 'viewer', '')),
+    prepaidAmount: safeParseBigInt(data.prepaid_amount),
+    timestamp: safeParseInt(data.timestamp),
   };
 }
 
@@ -78,17 +168,37 @@ export function parseSegmentPaidEvent(event: ContractEvent): {
   amount: bigint;
   timestamp: number;
 } | null {
-  if (!event.type.includes(EVENT_TYPES.SEGMENT_PAID)) {
+  if (!matchesEventType(event.type, EVENT_TYPES.SEGMENT_PAID)) {
     return null;
   }
 
   const data = event.data;
   return {
-    sessionId: data.session_id as string,
-    videoId: data.video_id as string,
-    segmentIndex: parseInt(data.segment_index as string),
-    amount: BigInt(data.amount as string),
-    timestamp: parseInt(data.timestamp as string),
+    sessionId: String(safeParseField(data, 'session_id', '')),
+    videoId: String(safeParseField(data, 'video_id', '')),
+    segmentIndex: safeParseInt(data.segment_index),
+    amount: safeParseBigInt(data.amount),
+    timestamp: safeParseInt(data.timestamp),
+  };
+}
+
+/** Extract SessionToppedUp event data */
+export function parseSessionToppedUpEvent(event: ContractEvent): {
+  sessionId: string;
+  additionalAmount: bigint;
+  newBalance: bigint;
+  timestamp: number;
+} | null {
+  if (!matchesEventType(event.type, EVENT_TYPES.SESSION_TOPPED_UP)) {
+    return null;
+  }
+
+  const data = event.data;
+  return {
+    sessionId: String(safeParseField(data, 'session_id', '')),
+    additionalAmount: safeParseBigInt(data.additional_amount),
+    newBalance: safeParseBigInt(data.new_balance),
+    timestamp: safeParseInt(data.timestamp),
   };
 }
 
@@ -100,17 +210,17 @@ export function parseSessionEndedEvent(event: ContractEvent): {
   refunded: bigint;
   timestamp: number;
 } | null {
-  if (!event.type.includes(EVENT_TYPES.SESSION_ENDED)) {
+  if (!matchesEventType(event.type, EVENT_TYPES.SESSION_ENDED)) {
     return null;
   }
 
   const data = event.data;
   return {
-    sessionId: data.session_id as string,
-    segmentsWatched: parseInt(data.segments_watched as string),
-    totalPaid: BigInt(data.total_paid as string),
-    refunded: BigInt(data.refunded as string),
-    timestamp: parseInt(data.timestamp as string),
+    sessionId: String(safeParseField(data, 'session_id', '')),
+    segmentsWatched: safeParseInt(data.segments_watched),
+    totalPaid: safeParseBigInt(data.total_paid),
+    refunded: safeParseBigInt(data.refunded),
+    timestamp: safeParseInt(data.timestamp),
   };
 }
 
@@ -120,15 +230,15 @@ export function parseEarningsWithdrawnEvent(event: ContractEvent): {
   amount: bigint;
   timestamp: number;
 } | null {
-  if (!event.type.includes(EVENT_TYPES.EARNINGS_WITHDRAWN)) {
+  if (!matchesEventType(event.type, EVENT_TYPES.EARNINGS_WITHDRAWN)) {
     return null;
   }
 
   const data = event.data;
   return {
-    creator: data.creator as string,
-    amount: BigInt(data.amount as string),
-    timestamp: parseInt(data.timestamp as string),
+    creator: String(safeParseField(data, 'creator', '')),
+    amount: safeParseBigInt(data.amount),
+    timestamp: safeParseInt(data.timestamp),
   };
 }
 
@@ -137,5 +247,13 @@ export function findEvent(
   events: ContractEvent[],
   eventType: string
 ): ContractEvent | undefined {
-  return events.find((e) => e.type.includes(eventType));
+  return events.find((e) => matchesEventType(e.type, eventType));
+}
+
+/** Find all events of a specific type */
+export function findAllEvents(
+  events: ContractEvent[],
+  eventType: string
+): ContractEvent[] {
+  return events.filter((e) => matchesEventType(e.type, eventType));
 }

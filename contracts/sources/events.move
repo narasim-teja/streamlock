@@ -161,4 +161,39 @@ module streamlock::events {
     ): EarningsWithdrawnEvent {
         EarningsWithdrawnEvent { creator, amount, timestamp }
     }
+
+    public fun new_price_updated(
+        video_id: u128,
+        old_price: u64,
+        new_price: u64,
+        timestamp: u64
+    ): VideoPriceUpdatedEvent {
+        VideoPriceUpdatedEvent {
+            video_id,
+            old_price,
+            new_price,
+            timestamp,
+        }
+    }
+
+    public fun new_video_deactivated(
+        video_id: u128,
+        timestamp: u64
+    ): VideoDeactivatedEvent {
+        VideoDeactivatedEvent { video_id, timestamp }
+    }
+
+    public fun new_session_topped_up(
+        session_id: u128,
+        additional_amount: u64,
+        new_balance: u64,
+        timestamp: u64
+    ): SessionToppedUpEvent {
+        SessionToppedUpEvent {
+            session_id,
+            additional_amount,
+            new_balance,
+            timestamp,
+        }
+    }
 }
