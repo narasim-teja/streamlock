@@ -1,0 +1,32 @@
+{
+  "name": "@streamlock/creator-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@streamlock/common": "workspace:*",
+    "@streamlock/crypto": "workspace:*",
+    "@streamlock/aptos": "workspace:*",
+    "@aptos-labs/ts-sdk": "^1.33.0",
+    "hono": "^4.7.0",
+    "fluent-ffmpeg": "^2.1.3"
+  },
+  "devDependencies": {
+    "@types/fluent-ffmpeg": "^2.1.27",
+    "typescript": "^5.7.0"
+  }
+}

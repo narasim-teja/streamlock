@@ -1,0 +1,29 @@
+{
+  "name": "streamlock",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Trustless pay-per-second video streaming protocol on Aptos blockchain",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean",
+    "deploy:contract": "bun run contracts/scripts/deploy.ts",
+    "db:push": "bun run --cwd apps/web drizzle-kit push",
+    "db:generate": "bun run --cwd apps/web drizzle-kit generate"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "turbo": "^2.3.0",
+    "typescript": "^5.7.0"
+  },
+  "packageManager": "bun@1.1.0",
+  "engines": {
+    "node": ">=18"
+  }
+}
