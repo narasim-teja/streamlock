@@ -14,7 +14,89 @@ module streamlock::protocol {
     use aptos_std::simple_map::{Self, SimpleMap};
 
     use streamlock::errors;
-    use streamlock::events;
+
+    // ============ Events ============
+
+    #[event]
+    /// Emitted when a creator registers
+    struct CreatorRegisteredEvent has drop, store {
+        creator: address,
+        timestamp: u64,
+    }
+
+    #[event]
+    /// Emitted when a video is registered
+    struct VideoRegisteredEvent has drop, store {
+        video_id: u128,
+        creator: address,
+        total_segments: u64,
+        price_per_segment: u64,
+        commitment_root: vector<u8>,
+        timestamp: u64,
+    }
+
+    #[event]
+    /// Emitted when video price is updated
+    struct VideoPriceUpdatedEvent has drop, store {
+        video_id: u128,
+        old_price: u64,
+        new_price: u64,
+        timestamp: u64,
+    }
+
+    #[event]
+    /// Emitted when video is deactivated
+    struct VideoDeactivatedEvent has drop, store {
+        video_id: u128,
+        timestamp: u64,
+    }
+
+    #[event]
+    /// Emitted when a viewing session starts
+    struct SessionStartedEvent has drop, store {
+        session_id: u128,
+        video_id: u128,
+        viewer: address,
+        prepaid_amount: u64,
+        timestamp: u64,
+    }
+
+    #[event]
+    /// Emitted when a segment is paid for
+    struct SegmentPaidEvent has drop, store {
+        session_id: u128,
+        video_id: u128,
+        segment_index: u64,
+        amount: u64,
+        timestamp: u64,
+    }
+
+    #[event]
+    /// Emitted when a session is topped up
+    struct SessionToppedUpEvent has drop, store {
+        session_id: u128,
+        additional_amount: u64,
+        new_balance: u64,
+        timestamp: u64,
+    }
+
+    #[event]
+    /// Emitted when a session ends
+    struct SessionEndedEvent has drop, store {
+        session_id: u128,
+        segments_watched: u64,
+        total_paid: u64,
+        refunded: u64,
+        timestamp: u64,
+    }
+
+    #[event]
+    /// Emitted when creator withdraws earnings
+    struct EarningsWithdrawnEvent has drop, store {
+        creator: address,
+        amount: u64,
+        timestamp: u64,
+    }
 
     // ============ Constants ============
 
@@ -174,7 +256,7 @@ module streamlock::protocol {
         });
 
         // Emit event
-        event::emit(events::new_creator_registered(creator_addr, now));
+        event::emit(CreatorRegisteredEvent { creator: creator_addr, timestamp: now });
     }
 
     /// Register a new video
@@ -231,14 +313,14 @@ module streamlock::protocol {
         creator_profile.total_videos = creator_profile.total_videos + 1;
 
         // Emit event
-        event::emit(events::new_video_registered(
+        event::emit(VideoRegisteredEvent {
             video_id,
-            creator_addr,
+            creator: creator_addr,
             total_segments,
             price_per_segment,
-            key_commitment_root,
-            now
-        ));
+            commitment_root: key_commitment_root,
+            timestamp: now,
+        });
     }
 
     /// Update video price (only affects new sessions)
@@ -263,7 +345,12 @@ module streamlock::protocol {
 
         // Emit event
         let now = timestamp::now_seconds();
-        event::emit(events::new_price_updated(video_id, old_price, new_price_per_segment, now));
+        event::emit(VideoPriceUpdatedEvent {
+            video_id,
+            old_price,
+            new_price: new_price_per_segment,
+            timestamp: now,
+        });
     }
 
     /// Deactivate a video
@@ -283,7 +370,7 @@ module streamlock::protocol {
 
         // Emit event
         let now = timestamp::now_seconds();
-        event::emit(events::new_video_deactivated(video_id, now));
+        event::emit(VideoDeactivatedEvent { video_id, timestamp: now });
     }
 
     // ============ Viewer Functions ============
@@ -343,13 +430,13 @@ module streamlock::protocol {
         table::add(&mut session_registry.sessions, session_id, session);
 
         // Emit event
-        event::emit(events::new_session_started(
+        event::emit(SessionStartedEvent {
             session_id,
             video_id,
-            viewer_addr,
+            viewer: viewer_addr,
             prepaid_amount,
-            now
-        ));
+            timestamp: now,
+        });
     }
 
     /// Pay for a segment
@@ -407,13 +494,13 @@ module streamlock::protocol {
         creator.pending_withdrawal = creator.pending_withdrawal + creator_amount;
 
         // Emit event
-        event::emit(events::new_segment_paid(
+        event::emit(SegmentPaidEvent {
             session_id,
-            session.video_id,
+            video_id: session.video_id,
             segment_index,
-            price,
-            now
-        ));
+            amount: price,
+            timestamp: now,
+        });
     }
 
     /// Top up session with more funds
@@ -450,7 +537,12 @@ module streamlock::protocol {
         };
 
         // Emit event
-        event::emit(events::new_session_topped_up(session_id, additional_amount, session.prepaid_balance, now));
+        event::emit(SessionToppedUpEvent {
+            session_id,
+            additional_amount,
+            new_balance: session.prepaid_balance,
+            timestamp: now,
+        });
     }
 
     /// End session and refund unused balance
@@ -490,13 +582,13 @@ module streamlock::protocol {
         video.total_views = video.total_views + 1;
 
         // Emit event
-        event::emit(events::new_session_ended(
+        event::emit(SessionEndedEvent {
             session_id,
-            segments_paid,
+            segments_watched: segments_paid,
             total_paid,
-            refund_amount,
-            now
-        ));
+            refunded: refund_amount,
+            timestamp: now,
+        });
     }
 
     /// Withdraw creator earnings
@@ -519,7 +611,11 @@ module streamlock::protocol {
         coin::transfer<AptosCoin>(&escrow_signer, creator_addr, amount);
 
         let now = timestamp::now_seconds();
-        event::emit(events::new_earnings_withdrawn(creator_addr, amount, now));
+        event::emit(EarningsWithdrawnEvent {
+            creator: creator_addr,
+            amount,
+            timestamp: now,
+        });
     }
 
     /// Withdraw protocol fees (admin only)

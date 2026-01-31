@@ -8,12 +8,12 @@ streamlock = "_"
 
 [dependencies.AptosFramework]
 git = "https://github.com/aptos-labs/aptos-core.git"
-rev = "aptos-release-v1.18"
+rev = "mainnet"
 subdir = "aptos-move/framework/aptos-framework"
 
 [dependencies.AptosStdlib]
 git = "https://github.com/aptos-labs/aptos-core.git"
-rev = "aptos-release-v1.18"
+rev = "mainnet"
 subdir = "aptos-move/framework/aptos-stdlib"
 
 [dev-dependencies]
