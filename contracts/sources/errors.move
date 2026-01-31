@@ -42,6 +42,9 @@ module streamlock::errors {
     /// Price below minimum
     const E_PRICE_TOO_LOW: u64 = 14;
 
+    /// Segment already paid
+    const E_SEGMENT_ALREADY_PAID: u64 = 15;
+
     // Public getters for error codes
     public fun not_registered(): u64 { E_NOT_REGISTERED }
     public fun already_registered(): u64 { E_ALREADY_REGISTERED }
@@ -57,4 +60,5 @@ module streamlock::errors {
     public fun invalid_commitment(): u64 { E_INVALID_COMMITMENT }
     public fun protocol_paused(): u64 { E_PROTOCOL_PAUSED }
     public fun price_too_low(): u64 { E_PRICE_TOO_LOW }
+    public fun segment_already_paid(): u64 { E_SEGMENT_ALREADY_PAID }
 }

@@ -87,6 +87,14 @@ export class VideoNotActiveError extends StreamLockError {
   }
 }
 
+/** Segment already paid */
+export class SegmentAlreadyPaidError extends StreamLockError {
+  constructor(segmentIndex: number) {
+    super(`Segment already paid: ${segmentIndex}`, 'SEGMENT_ALREADY_PAID', { segmentIndex });
+    this.name = 'SegmentAlreadyPaidError';
+  }
+}
+
 /** Encryption error */
 export class EncryptionError extends StreamLockError {
   constructor(message: string) {
@@ -132,6 +140,9 @@ export class ContractError extends StreamLockError {
       10: 'Invalid proof',
       11: 'Dispute exists',
       12: 'Invalid commitment',
+      13: 'Protocol paused',
+      14: 'Price too low',
+      15: 'Segment already paid',
     };
     return new ContractError(code, messages[code] || `Unknown error code: ${code}`);
   }

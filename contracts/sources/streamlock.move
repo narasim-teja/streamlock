@@ -374,10 +374,11 @@ module streamlock::protocol {
         let video_registry = borrow_global_mut<VideoRegistry>(@streamlock);
         let video = table::borrow_mut(&mut video_registry.videos, session.video_id);
 
+        // Check bounds first (more specific error)
         assert!(segment_index < video.total_segments, errors::invalid_segment_index());
 
         // Check not already paid - O(1) lookup with SimpleMap
-        assert!(!simple_map::contains_key(&session.paid_segments, &segment_index), errors::invalid_segment_index());
+        assert!(!simple_map::contains_key(&session.paid_segments, &segment_index), errors::segment_already_paid());
 
         // Check sufficient balance
         let price = video.price_per_segment;
@@ -442,8 +443,13 @@ module streamlock::protocol {
 
         session.prepaid_balance = session.prepaid_balance + additional_amount;
 
-        // Emit event
+        // Extend session expiry if running low
         let now = timestamp::now_seconds();
+        if (session.expires_at < now + DEFAULT_SESSION_DURATION) {
+            session.expires_at = now + DEFAULT_SESSION_DURATION;
+        };
+
+        // Emit event
         event::emit(events::new_session_topped_up(session_id, additional_amount, session.prepaid_balance, now));
     }
 
