@@ -3,3 +3,4 @@
  */
 
 export * from './x402Client.js';
+export * from './transactionQueue.js';

@@ -5,3 +5,5 @@
 export * from './useSession.js';
 export * from './usePayment.js';
 export * from './usePlayback.js';
+export * from './useWalletSession.js';
+export * from './useStreamLockPlayer.js';

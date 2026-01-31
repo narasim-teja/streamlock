@@ -389,6 +389,132 @@ export class StreamLockContract {
 
     return BigInt(result[0] as string);
   }
+
+  // ============ Gas Estimation ============
+
+  /** Gas estimate result */
+  /** Simulate a transaction to estimate gas */
+  async simulateTransaction(
+    senderAddress: string,
+    payload: InputGenerateTransactionPayloadData
+  ): Promise<{
+    gasUnits: bigint;
+    gasPrice: bigint;
+    totalCost: bigint;
+    success: boolean;
+    vmStatus?: string;
+  }> {
+    try {
+      const transaction = await this.client.transaction.build.simple({
+        sender: senderAddress,
+        data: payload,
+      });
+
+      const [simulation] = await this.client.transaction.simulate.simple({
+        signerPublicKey: await this.getPublicKeyForAddress(senderAddress),
+        transaction,
+      });
+
+      const gasUnits = BigInt(simulation.gas_used);
+      const gasPrice = BigInt(simulation.gas_unit_price);
+
+      return {
+        gasUnits,
+        gasPrice,
+        totalCost: gasUnits * gasPrice,
+        success: simulation.success,
+        vmStatus: simulation.vm_status,
+      };
+    } catch (error) {
+      // Return default estimates on simulation failure
+      return {
+        gasUnits: 10000n,
+        gasPrice: 100n,
+        totalCost: 1000000n,
+        success: false,
+        vmStatus: error instanceof Error ? error.message : 'Simulation failed',
+      };
+    }
+  }
+
+  /** Get public key for address (for simulation) */
+  private async getPublicKeyForAddress(address: string): Promise<{ key: string; type: string }> {
+    try {
+      const account = await this.client.getAccountInfo({ accountAddress: address });
+      // Return a placeholder key structure - simulation doesn't require actual signature
+      return {
+        key: account.authentication_key || address,
+        type: 'ed25519',
+      };
+    } catch {
+      // Fallback for new accounts
+      return {
+        key: address,
+        type: 'ed25519',
+      };
+    }
+  }
+
+  /** Estimate gas for start_session */
+  async estimateStartSession(
+    viewerAddress: string,
+    videoId: string,
+    prepaidSegments: number,
+    maxDurationSeconds: number
+  ): Promise<{ gasUnits: bigint; totalCost: bigint }> {
+    const result = await this.simulateTransaction(viewerAddress, {
+      function: this.functionId('start_session'),
+      functionArguments: [videoId, prepaidSegments, maxDurationSeconds],
+    });
+
+    return {
+      gasUnits: result.gasUnits,
+      totalCost: result.totalCost,
+    };
+  }
+
+  /** Estimate gas for pay_for_segment */
+  async estimatePayForSegment(
+    viewerAddress: string,
+    sessionId: string,
+    segmentIndex: number
+  ): Promise<{ gasUnits: bigint; totalCost: bigint }> {
+    const result = await this.simulateTransaction(viewerAddress, {
+      function: this.functionId('pay_for_segment'),
+      functionArguments: [sessionId, segmentIndex],
+    });
+
+    return {
+      gasUnits: result.gasUnits,
+      totalCost: result.totalCost,
+    };
+  }
+
+  /** Estimate gas for end_session */
+  async estimateEndSession(
+    viewerAddress: string,
+    sessionId: string
+  ): Promise<{ gasUnits: bigint; totalCost: bigint }> {
+    const result = await this.simulateTransaction(viewerAddress, {
+      function: this.functionId('end_session'),
+      functionArguments: [sessionId],
+    });
+
+    return {
+      gasUnits: result.gasUnits,
+      totalCost: result.totalCost,
+    };
+  }
+
+  /** Get current gas price */
+  async getGasPrice(): Promise<bigint> {
+    try {
+      const estimate = await this.client.getGasPriceEstimation();
+      return BigInt(estimate.gas_estimate);
+    } catch {
+      return 100n; // Default gas price
+    }
+  }
 }
 
 /** Create contract instance */

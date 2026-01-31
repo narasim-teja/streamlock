@@ -1,9 +1,14 @@
 /**
- * Main StreamLockPlayer class
+ * Main StreamLockPlayer class - supports wallet adapter integration
  */
 
 import Hls from 'hls.js';
-import type { Aptos, Account } from '@aptos-labs/ts-sdk';
+import type {
+  Aptos,
+  Account,
+  InputGenerateTransactionPayloadData,
+  PendingTransactionResponse,
+} from '@aptos-labs/ts-sdk';
 import type {
   SessionInfo,
   SessionSummary,
@@ -16,6 +21,13 @@ import {
 } from '@streamlock/common';
 import { StreamLockContract, createStreamLockContract } from '@streamlock/aptos';
 import { SessionManager } from './session/manager.js';
+import {
+  X402PaymentClient,
+  type SignAndSubmitTransactionFunction,
+} from './payment/x402Client.js';
+
+/** Wallet adapter sign and submit function type (re-exported for convenience) */
+export type { SignAndSubmitTransactionFunction };
 
 /** Player configuration */
 export interface StreamLockPlayerConfig {
@@ -34,6 +46,7 @@ export interface PlayOptions {
   onError?: (error: Error) => void;
   onSessionStart?: (session: SessionInfo) => void;
   onSessionEnd?: (summary: SessionSummary) => void;
+  onLowBalance?: (remainingSegments: number) => void;
 }
 
 /** Video info returned from initialize */
@@ -47,7 +60,16 @@ export interface VideoInfo {
   creator: string;
 }
 
-/** StreamLock Player */
+/** Signer type - either raw Account or wallet adapter function */
+export type PlayerSigner =
+  | { type: 'account'; account: Account }
+  | {
+      type: 'wallet';
+      signAndSubmit: SignAndSubmitTransactionFunction;
+      address: string;
+    };
+
+/** StreamLock Player - supports both raw Account and wallet adapter */
 export class StreamLockPlayer {
   private config: StreamLockPlayerConfig;
   private contract: StreamLockContract;
@@ -56,7 +78,8 @@ export class StreamLockPlayer {
   private sessionManager: SessionManager | null = null;
   private currentVideo: VideoInfo | null = null;
   private options: PlayOptions | null = null;
-  private signer: Account | null = null;
+  private signer: PlayerSigner | null = null;
+  private paymentClient: X402PaymentClient | null = null;
 
   constructor(config: StreamLockPlayerConfig) {
     this.config = config;
@@ -64,6 +87,19 @@ export class StreamLockPlayer {
       address: config.contractAddress,
       moduleName: 'protocol',
     });
+  }
+
+  /** Get function identifier */
+  private functionId(name: string): `${string}::${string}::${string}` {
+    return `${this.config.contractAddress}::protocol::${name}`;
+  }
+
+  /** Get account address from signer */
+  private getSignerAddress(): string {
+    if (!this.signer) throw new Error('No signer set');
+    return this.signer.type === 'account'
+      ? this.signer.account.accountAddress.toString()
+      : this.signer.address;
   }
 
   /** Initialize player with video */
@@ -87,26 +123,77 @@ export class StreamLockPlayer {
     return this.currentVideo;
   }
 
-  /** Start a viewing session */
+  /**
+   * Start a viewing session with raw Account
+   * @deprecated Use startSessionWithWallet for wallet adapter support
+   */
   async startSession(
     signer: Account,
     prepaidSegments: number = DEFAULT_PREPAID_SEGMENTS
   ): Promise<SessionInfo> {
+    this.signer = { type: 'account', account: signer };
+    return this.createSession(prepaidSegments);
+  }
+
+  /**
+   * Start a viewing session with wallet adapter
+   */
+  async startSessionWithWallet(
+    signAndSubmit: SignAndSubmitTransactionFunction,
+    accountAddress: string,
+    prepaidSegments: number = DEFAULT_PREPAID_SEGMENTS
+  ): Promise<SessionInfo> {
+    this.signer = { type: 'wallet', signAndSubmit, address: accountAddress };
+    return this.createSession(prepaidSegments);
+  }
+
+  /** Internal session creation logic */
+  private async createSession(prepaidSegments: number): Promise<SessionInfo> {
     if (!this.currentVideo) {
       throw new Error('Player not initialized. Call initialize() first.');
     }
+    if (!this.signer) {
+      throw new Error('No signer set');
+    }
 
-    this.signer = signer;
+    let txHash: string;
 
-    // Create session on-chain
-    const result = await this.contract.startSession(signer, {
-      videoId: this.currentVideo.videoId,
-      prepaidSegments,
-      maxDurationSeconds: SESSION_EXPIRY_SECONDS,
+    if (this.signer.type === 'wallet') {
+      // Use wallet adapter
+      const payload: InputGenerateTransactionPayloadData = {
+        function: this.functionId('start_session'),
+        functionArguments: [
+          this.currentVideo.videoId,
+          prepaidSegments,
+          SESSION_EXPIRY_SECONDS,
+        ],
+      };
+
+      const pendingTx = await this.signer.signAndSubmit(payload);
+      txHash = pendingTx.hash;
+
+      // Wait for transaction
+      await this.config.aptosClient.waitForTransaction({
+        transactionHash: pendingTx.hash,
+      });
+    } else {
+      // Use raw Account
+      const result = await this.contract.startSession(this.signer.account, {
+        videoId: this.currentVideo.videoId,
+        prepaidSegments,
+        maxDurationSeconds: SESSION_EXPIRY_SECONDS,
+      });
+      txHash = result.hash;
+    }
+
+    // Get transaction to extract events
+    const tx = await this.config.aptosClient.getTransactionByHash({
+      transactionHash: txHash,
     });
 
     // Extract session info from event
-    const sessionEvent = result.events.find((e) =>
+    const events = 'events' in tx ? tx.events : [];
+    const sessionEvent = events.find((e: { type: string }) =>
       e.type.includes('SessionStartedEvent')
     );
 
@@ -130,6 +217,20 @@ export class StreamLockPlayer {
 
     // Initialize session manager
     this.sessionManager = new SessionManager(sessionInfo, this.currentVideo);
+
+    // Initialize payment client
+    this.paymentClient = new X402PaymentClient({
+      aptosClient: this.config.aptosClient,
+      contractAddress: this.config.contractAddress,
+      accountAddress: this.getSignerAddress(),
+      signer:
+        this.signer.type === 'wallet'
+          ? this.signer.signAndSubmit
+          : this.signer.account,
+    });
+
+    // Notify callback
+    this.options?.onSessionStart?.(sessionInfo);
 
     return sessionInfo;
   }
@@ -225,10 +326,26 @@ export class StreamLockPlayer {
       throw new Error('No active session');
     }
 
-    await this.contract.topUpSession(this.signer, {
-      sessionId: this.sessionManager.getSessionInfo().sessionId,
-      additionalSegments,
-    });
+    const sessionId = this.sessionManager.getSessionInfo().sessionId;
+
+    if (this.signer.type === 'wallet') {
+      // Use wallet adapter
+      const payload: InputGenerateTransactionPayloadData = {
+        function: this.functionId('top_up_session'),
+        functionArguments: [sessionId, additionalSegments],
+      };
+
+      const pendingTx = await this.signer.signAndSubmit(payload);
+      await this.config.aptosClient.waitForTransaction({
+        transactionHash: pendingTx.hash,
+      });
+    } else {
+      // Use raw Account
+      await this.contract.topUpSession(this.signer.account, {
+        sessionId,
+        additionalSegments,
+      });
+    }
 
     this.sessionManager.addBalance(
       BigInt(additionalSegments) * (this.currentVideo?.pricePerSegment ?? 0n)
@@ -241,12 +358,37 @@ export class StreamLockPlayer {
       throw new Error('No active session');
     }
 
-    const result = await this.contract.endSession(
-      this.signer,
-      this.sessionManager.getSessionInfo().sessionId
-    );
+    const sessionId = this.sessionManager.getSessionInfo().sessionId;
+    let txHash: string;
 
-    const endEvent = result.events.find((e) =>
+    if (this.signer.type === 'wallet') {
+      // Use wallet adapter
+      const payload: InputGenerateTransactionPayloadData = {
+        function: this.functionId('end_session'),
+        functionArguments: [sessionId],
+      };
+
+      const pendingTx = await this.signer.signAndSubmit(payload);
+      txHash = pendingTx.hash;
+      await this.config.aptosClient.waitForTransaction({
+        transactionHash: pendingTx.hash,
+      });
+    } else {
+      // Use raw Account
+      const result = await this.contract.endSession(
+        this.signer.account,
+        sessionId
+      );
+      txHash = result.hash;
+    }
+
+    // Get transaction to extract events
+    const tx = await this.config.aptosClient.getTransactionByHash({
+      transactionHash: txHash,
+    });
+
+    const events = 'events' in tx ? tx.events : [];
+    const endEvent = events.find((e: { type: string }) =>
       e.type.includes('SessionEndedEvent')
     );
 
@@ -260,15 +402,21 @@ export class StreamLockPlayer {
       segmentsWatched: parseInt(eventData?.segments_watched ?? '0'),
       totalPaid: BigInt(eventData?.total_paid ?? '0'),
       refunded: BigInt(eventData?.refunded ?? '0'),
-      transactionHash: result.hash,
+      transactionHash: txHash,
     };
 
     this.options?.onSessionEnd?.(summary);
 
     // Cleanup
     this.sessionManager = null;
+    this.paymentClient = null;
 
     return summary;
+  }
+
+  /** Get payment client */
+  getPaymentClient(): X402PaymentClient | null {
+    return this.paymentClient;
   }
 
   /** Get video element */
