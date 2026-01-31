@@ -155,7 +155,6 @@ export default function WatchPage() {
     let isActive = true;
 
     // Skip if HLS instance already exists for this exact video (React 18 StrictMode double-run)
-    // Only recreate if the video actually changed
     if (hlsRef.current && hlsVideoIdRef.current === currentVideo.videoId) {
       console.log('[StreamLock] HLS instance already exists for this video, skipping recreation');
       return;
@@ -241,94 +240,37 @@ export default function WatchPage() {
         },
       });
 
-      // Create HLS instance with custom loader and buffer gap handling
+      // Create HLS instance - config synced with StreamLockPlayer SDK
       const hls = new Hls({
-        debug: true, // Enable debug to see what's happening
         enableWorker: true,
+        lowLatencyMode: false,
         loader: X402Loader,
-        // Buffer gap handling - important for encrypted streams
-        maxBufferHole: 0.5, // Allow up to 0.5s buffer holes
-        maxMaxBufferLength: 30, // Buffer up to 30 seconds
-        startPosition: -1, // Start from the beginning, let HLS.js figure out the position
-        nudgeOffset: 0.1, // Nudge amount when stalled
-        nudgeMaxRetry: 5, // Max nudge retries before giving up
-        // Fix for Arc browser - don't let HLS.js manage backBuffer aggressively
-        backBufferLength: Infinity,
-        // Prevent liveSyncDuration from interfering
-        liveSyncDuration: undefined,
-        liveMaxLatencyDuration: undefined,
       });
 
-      // IMPORTANT: Attach media FIRST, then load source
-      // This ensures MediaSource is properly bound before loading starts
+      hls.loadSource(currentVideo.contentUri);
       hls.attachMedia(videoEl);
-
-      // Wait for MEDIA_ATTACHED event before loading source
-      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-        console.log('[StreamLock] Media attached, loading source...');
-        hls.loadSource(currentVideo.contentUri);
-      });
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         console.log('[StreamLock] Manifest parsed, ready to play');
       });
 
-      // Log fragment loading progress
-      hls.on(Hls.Events.FRAG_LOADING, (event, data) => {
-        console.log('[StreamLock] Fragment loading:', data.frag.sn);
-      });
-
-      hls.on(Hls.Events.FRAG_LOADED, (event, data) => {
-        console.log('[StreamLock] Fragment loaded:', data.frag.sn);
-      });
-
-      hls.on(Hls.Events.FRAG_DECRYPTED, (event, data) => {
-        console.log('[StreamLock] Fragment DECRYPTED:', data.frag.sn);
-      });
-
       // Track if we've already tried to autoplay
       let hasTriedAutoplay = false;
 
-      hls.on(Hls.Events.FRAG_BUFFERED, (event, data) => {
-        console.log('[StreamLock] Fragment buffered:', data.frag.sn);
-        // Only try autoplay once after first fragment is buffered
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        // Try autoplay once after first fragment is buffered
         if (!hasTriedAutoplay) {
           hasTriedAutoplay = true;
-          // Wait a bit for the buffer to stabilize, then seek past any gap and play
-          setTimeout(() => {
-            // Seek to the start of the buffered range if there's a gap
-            if (videoEl.buffered.length > 0) {
-              const bufferStart = videoEl.buffered.start(0);
-              if (bufferStart > 0.01 && videoEl.currentTime < bufferStart) {
-                console.log(`[StreamLock] Seeking past buffer gap from ${videoEl.currentTime} to ${bufferStart}`);
-                videoEl.currentTime = bufferStart;
-              }
-            }
-            videoEl.play().catch((err) => {
-              console.log('[StreamLock] Autoplay blocked:', err.message);
-            });
-          }, 100);
+          videoEl.play().catch((err) => {
+            console.log('[StreamLock] Autoplay blocked:', err.message);
+          });
         }
       });
 
-      hls.on(Hls.Events.ERROR, (event, data) => {
-        console.error('[StreamLock] HLS error:', data);
+      hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              console.log('[StreamLock] Network error, trying to recover...');
-              hls.startLoad();
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              console.log('[StreamLock] Media error, trying to recover...');
-              hls.recoverMediaError();
-              break;
-            default:
-              console.error('[StreamLock] Fatal error, cannot recover');
-              setError('Playback error. Please try again.');
-              hls.destroy();
-              break;
-          }
+          console.error('[StreamLock] Fatal HLS error:', data.details);
+          setError('Playback error. Please try again.');
         }
       });
 
@@ -342,11 +284,9 @@ export default function WatchPage() {
     }
 
     return () => {
-      // Don't destroy HLS here - prevents React 18 StrictMode from closing MediaSource
-      // Cleanup happens at:
-      // - Effect start (lines 165-170) on dependency change
-      // - handleEndSession on session end
       isActive = false;
+      // Don't destroy HLS here - handled by effect start and handleEndSession
+      // This prevents React 18 StrictMode from breaking MediaSource
     };
     // Note: signAndSubmitTransaction intentionally excluded - accessed via signerRef
     // to prevent HLS destruction when wallet adapter recreates the function
@@ -694,7 +634,7 @@ export default function WatchPage() {
                   </div>
                 </div>
               ) : null}
-              {/* Always render video element to prevent MediaSource from closing on re-renders */}
+              {/* Always render video element to prevent MediaSource issues on re-renders */}
               <video
                 ref={videoRef}
                 className={`w-full h-full ${!session ? 'hidden' : ''}`}
