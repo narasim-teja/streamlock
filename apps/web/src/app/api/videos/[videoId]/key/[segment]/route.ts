@@ -66,10 +66,9 @@ async function verifyPaymentOnChain(
     return { valid: true };
   } catch (error) {
     console.error('Payment verification error:', error);
-    // On verification error, allow the request through with a warning
-    // This prevents blocking legitimate payments due to RPC issues
-    console.warn('Payment verification failed, allowing request:', txHash);
-    return { valid: true };
+    // Fail closed - deny access on verification errors for security
+    // Users can retry if there's a transient RPC issue
+    return { valid: false, error: 'Payment verification failed - please retry' };
   }
 }
 
@@ -165,7 +164,7 @@ export async function GET(
         );
       }
 
-      console.log('Payment verified:', payment.txHash);
+      // Payment verified successfully
     } catch (err) {
       console.error('Payment header parse error:', err);
       return NextResponse.json(
@@ -191,12 +190,6 @@ export async function GET(
     // Derive key and IV
     const masterSecret = video.masterSecret;
     const { key, iv } = deriveSegmentKeyPair(masterSecret, videoId, segmentIndex);
-
-    // Debug: Log key and IV for verification
-    console.log(`[KeyEndpoint] Segment ${segmentIndex}:`);
-    console.log(`  Key (hex): ${key.toString('hex')}`);
-    console.log(`  IV (hex): ${iv.toString('hex')}`);
-    console.log(`  Key (base64): ${key.toString('base64')}`);
 
     // Generate Merkle proof
     const tree = deserializeMerkleTree(merkleTreeData.treeData);

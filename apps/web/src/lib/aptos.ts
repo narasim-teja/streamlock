@@ -28,5 +28,9 @@ export function getContractAddress(): string {
 }
 
 export function getKeyServerUrl(): string {
-  return process.env.NEXT_PUBLIC_KEY_SERVER_URL || 'http://localhost:3000/api';
+  const url = process.env.NEXT_PUBLIC_KEY_SERVER_URL;
+  if (!url) {
+    throw new Error('NEXT_PUBLIC_KEY_SERVER_URL environment variable is required');
+  }
+  return url;
 }

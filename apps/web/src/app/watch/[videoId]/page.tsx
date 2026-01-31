@@ -151,18 +151,14 @@ export default function WatchPage() {
 
     const videoEl = videoRef.current;
 
-    // Track if this effect instance is still active (for React 18 StrictMode)
-    let isActive = true;
 
     // Skip if HLS instance already exists for this exact video (React 18 StrictMode double-run)
     if (hlsRef.current && hlsVideoIdRef.current === currentVideo.videoId) {
-      console.log('[StreamLock] HLS instance already exists for this video, skipping recreation');
       return;
     }
 
     // Destroy previous instance if it's for a different video
     if (hlsRef.current) {
-      console.log('[StreamLock] Destroying HLS instance for previous video');
       hlsRef.current.destroy();
       hlsRef.current = null;
       hlsVideoIdRef.current = null;
@@ -194,7 +190,6 @@ export default function WatchPage() {
         accountAddress: accountAddressStr!,
         signer: signerWrapper,
         onPayment: (segmentIndex, txHash, amount) => {
-          console.log(`[StreamLock] Payment for segment ${segmentIndex}: ${txHash}`);
           setPayments(prev => {
             if (prev.some(p => p.segmentIndex === segmentIndex)) {
               return prev;
@@ -207,13 +202,11 @@ export default function WatchPage() {
             }];
           });
         },
-        onKeyReceived: (key) => {
-          console.log(`[StreamLock] Key received for segment ${key.segmentIndex}`);
+        onKeyReceived: () => {
           setIsLoadingKey(false);
           setCurrentKeySegment(null);
         },
-        onError: (error) => {
-          console.error('[StreamLock] Key loader error:', error);
+        onError: () => {
           setIsLoadingKey(false);
         },
       });
@@ -224,17 +217,14 @@ export default function WatchPage() {
       const X402Loader = createX402LoaderClass({
         keyLoader,
         onKeyLoading: (segmentIndex) => {
-          console.log(`[StreamLock] Loading key for segment ${segmentIndex}`);
           setCurrentKeySegment(segmentIndex);
           setIsLoadingKey(true);
         },
-        onKeyLoaded: (segmentIndex) => {
-          console.log(`[StreamLock] Key loaded for segment ${segmentIndex}`);
+        onKeyLoaded: () => {
           setIsLoadingKey(false);
           setCurrentKeySegment(null);
         },
         onError: (segmentIndex, error) => {
-          console.error(`[StreamLock] Error loading key for segment ${segmentIndex}:`, error);
           setIsLoadingKey(false);
           setError(`Failed to load key for segment ${segmentIndex}: ${error.message}`);
         },
@@ -251,7 +241,7 @@ export default function WatchPage() {
       hls.attachMedia(videoEl);
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        console.log('[StreamLock] Manifest parsed, ready to play');
+        // Manifest parsed, ready to play
       });
 
       // Track if we've already tried to autoplay
@@ -261,22 +251,20 @@ export default function WatchPage() {
         // Try autoplay once after first fragment is buffered
         if (!hasTriedAutoplay) {
           hasTriedAutoplay = true;
-          videoEl.play().catch((err) => {
-            console.log('[StreamLock] Autoplay blocked:', err.message);
+          videoEl.play().catch(() => {
+            // Autoplay may be blocked by browser policy - user can click play
           });
         }
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
-          console.error('[StreamLock] Fatal HLS error:', data.details);
           setError('Playback error. Please try again.');
         }
       });
 
       hlsRef.current = hls;
       hlsVideoIdRef.current = currentVideo.videoId;
-      console.log('[StreamLock] HLS instance created and attached for video:', currentVideo.videoId);
     } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
       // Native HLS support (Safari) - won't work with x402 payment flow
       // Safari would need a service worker approach for custom key loading
@@ -284,7 +272,6 @@ export default function WatchPage() {
     }
 
     return () => {
-      isActive = false;
       // Don't destroy HLS here - handled by effect start and handleEndSession
       // This prevents React 18 StrictMode from breaking MediaSource
     };
@@ -377,31 +364,14 @@ export default function WatchPage() {
             isActive: true,
           });
         } else {
-          // Fallback: create mock session if event not found
-          console.warn('Session event not found, using fallback session');
-          setSession({
-            sessionId: BigInt(Date.now()),
-            videoId: BigInt(video.onChainVideoId),
-            prepaidBalance: prepaidAmount,
-            segmentsPaid: 0,
-            isActive: true,
-          });
+          throw new Error('Session creation failed - no session event found in transaction');
         }
       } else {
-        // No on-chain video ID yet - create a demo session for testing
-        // This allows testing the video playback flow before full on-chain registration
-        console.warn('Video not registered on-chain, using demo session');
-        setSession({
-          sessionId: BigInt(Date.now()),
-          videoId: 0n,
-          prepaidBalance: prepaidAmount,
-          segmentsPaid: 0,
-          isActive: true,
-        });
+        // Video not registered on-chain - cannot create session
+        throw new Error('This video is not yet registered on the blockchain. Please contact the creator.');
       }
     } catch (err) {
-      console.error('Failed to start session:', err);
-      setError('Failed to start session. Please try again.');
+      setError(err instanceof Error ? err.message : 'Failed to start session. Please try again.');
     } finally {
       setSessionLoading(false);
     }
@@ -446,8 +416,7 @@ export default function WatchPage() {
       if (keyLoaderRef.current) {
         keyLoaderRef.current.updateSessionId(session.sessionId);
       }
-    } catch (err) {
-      console.error('Failed to top up:', err);
+    } catch {
       setError('Failed to top up session');
     } finally {
       setSessionLoading(false);
@@ -470,8 +439,7 @@ export default function WatchPage() {
             functionArguments: [session.sessionId.toString()],
           };
           await currentSigner({ data: payload });
-        } catch (err) {
-          console.warn('Failed to end on-chain session:', err);
+        } catch {
           // Continue with cleanup even if on-chain fails
         }
       }
@@ -498,8 +466,8 @@ export default function WatchPage() {
         videoRef.current.pause();
         videoRef.current.currentTime = 0;
       }
-    } catch (err) {
-      console.error('Failed to end session:', err);
+    } catch {
+      // Session cleanup continues even on error
     } finally {
       setSessionLoading(false);
     }

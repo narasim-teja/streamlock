@@ -47,8 +47,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log(`[Upload] Starting video processing for: ${title} (${videoId})`);
-
     // Get the key server base URL (uses same origin as the API)
     const keyServerBaseUrl = process.env.NEXT_PUBLIC_KEY_SERVER_URL || '/api';
 
@@ -59,20 +57,14 @@ export async function POST(request: NextRequest) {
       keyServerBaseUrl,
     });
 
-    console.log(
-      `[Upload] Video processed: ${result.totalSegments} segments, ${result.durationSeconds}s duration`
-    );
-
     // 2. Upload HLS package to storage
     const storage = getStorageProvider();
     const contentUri = await uploadHLSPackage(storage, videoId, result.hlsPackage);
-    console.log(`[Upload] HLS package uploaded: ${contentUri}`);
 
     // 3. Upload thumbnail if provided
     let thumbnailUri = '';
     if (thumbnailFile) {
       thumbnailUri = await uploadThumbnail(storage, videoId, thumbnailFile);
-      console.log(`[Upload] Thumbnail uploaded: ${thumbnailUri}`);
     }
 
     // 4. Convert price to octas (bigint)
@@ -116,8 +108,6 @@ export async function POST(request: NextRequest) {
       treeData: serializeMerkleTree(result.merkleTree),
     });
 
-    console.log(`[Upload] Database records created for video: ${videoId}`);
-
     // 8. Build the transaction payload for on-chain registration
     const contractAddress = getContractAddress();
     const registerVideoPayload = {
@@ -132,8 +122,6 @@ export async function POST(request: NextRequest) {
         priceInOctas.toString(), // price_per_segment: u64
       ],
     };
-
-    console.log(`[Upload] Upload complete for video: ${videoId}`);
 
     return NextResponse.json({
       success: true,
@@ -151,8 +139,6 @@ export async function POST(request: NextRequest) {
       payload: registerVideoPayload,
     });
   } catch (error) {
-    console.error('[Upload] Error:', error);
-
     // Handle specific error types with appropriate status codes
     if (error instanceof VideoTooLongError) {
       return NextResponse.json(

@@ -414,8 +414,23 @@ export class StreamLockContract {
 
   /**
    * Get gas estimate for a transaction.
-   * Note: Without access to the account's private key, we cannot properly simulate.
-   * This returns conservative fallback estimates suitable for most StreamLock operations.
+   *
+   * IMPORTANT: This method returns CONSERVATIVE FALLBACK estimates (0.05 APT).
+   *
+   * Why we can't simulate accurately:
+   * - Aptos transaction simulation requires a valid PublicKey object
+   * - We only have the sender address (string), not the Account/PublicKey
+   * - Without PublicKey, the Aptos SDK cannot create a valid simulation request
+   *
+   * The 0.05 APT fallback is intentionally high to ensure transactions succeed.
+   * Typical StreamLock transactions use ~0.001-0.01 APT in gas.
+   *
+   * For accurate gas estimation, use `simulateTransactionWithAccount()` when
+   * you have access to the full Account object (with publicKey).
+   *
+   * @param _senderAddress - Sender's address (unused - simulation not possible)
+   * @param _payload - Transaction payload (unused - simulation not possible)
+   * @returns Conservative gas estimate of 0.05 APT
    */
   async estimateGas(
     _senderAddress: string,
@@ -476,7 +491,6 @@ export class StreamLockContract {
       };
     } catch (error) {
       // Return safer fallback estimates on simulation failure
-      console.warn('Transaction simulation failed:', error instanceof Error ? error.message : error);
       return {
         gasUnits: 50000n,
         gasPrice: 100n,
@@ -566,6 +580,81 @@ export class StreamLockContract {
     } catch {
       return 100n; // Default gas price
     }
+  }
+
+  // ============ Event Queries ============
+
+  /**
+   * Get all video IDs registered by a creator
+   *
+   * Uses the Aptos indexer to query VideoRegisteredEvent events.
+   * Returns video IDs that can be used to fetch full video details.
+   *
+   * @param creatorAddress - Creator's Aptos address
+   * @param limit - Maximum number of results (default: 100)
+   * @returns Array of video IDs registered by this creator
+   */
+  async getVideoIdsByCreator(
+    creatorAddress: string,
+    limit = 100
+  ): Promise<bigint[]> {
+    try {
+      // Query events from the contract module
+      const eventType = `${this.contractAddress}::protocol::VideoRegisteredEvent`;
+
+      const events = await this.client.getEvents({
+        options: {
+          where: {
+            account_address: { _eq: this.contractAddress },
+            type: { _eq: eventType },
+          },
+          limit,
+          orderBy: [{ transaction_block_height: 'desc' }],
+        },
+      });
+
+      // Filter events by creator and extract video IDs
+      const videoIds: bigint[] = [];
+      for (const event of events) {
+        const data = event.data as Record<string, unknown>;
+        if (data.creator === creatorAddress && data.video_id !== undefined) {
+          videoIds.push(BigInt(String(data.video_id)));
+        }
+      }
+
+      return videoIds;
+    } catch (error) {
+      // Indexer may not be available - return empty array
+      console.warn('Failed to query video events:', error instanceof Error ? error.message : error);
+      return [];
+    }
+  }
+
+  /**
+   * Get all videos registered by a creator with full details
+   *
+   * Queries VideoRegisteredEvent events and enriches with on-chain video data.
+   *
+   * @param creatorAddress - Creator's Aptos address
+   * @param limit - Maximum number of results (default: 100)
+   * @returns Array of video details
+   */
+  async getVideosByCreator(
+    creatorAddress: string,
+    limit = 100
+  ): Promise<OnChainVideo[]> {
+    const videoIds = await this.getVideoIdsByCreator(creatorAddress, limit);
+
+    // Fetch full video details for each ID
+    const videos: OnChainVideo[] = [];
+    for (const videoId of videoIds) {
+      const video = await this.getVideo(videoId);
+      if (video && video.isActive) {
+        videos.push(video);
+      }
+    }
+
+    return videos;
   }
 }
 

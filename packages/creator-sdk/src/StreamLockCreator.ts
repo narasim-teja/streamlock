@@ -71,7 +71,19 @@ export interface CreatorMetadata {
   avatar?: string;
 }
 
-/** In-memory master secret store (NOT for production use) */
+/**
+ * In-memory master secret store
+ *
+ * WARNING: NOT SUITABLE FOR PRODUCTION USE
+ * - Secrets are lost when the process restarts
+ * - No encryption at rest
+ * - Not distributed across instances
+ *
+ * For production, implement MasterSecretStore interface with:
+ * - Database storage (PostgreSQL, MySQL)
+ * - Secrets manager (AWS Secrets Manager, HashiCorp Vault)
+ * - Encrypted file storage
+ */
 class InMemoryMasterSecretStore implements MasterSecretStore {
   private secrets = new Map<string, Buffer>();
   async set(videoId: string, secret: Buffer): Promise<void> {
@@ -85,7 +97,17 @@ class InMemoryMasterSecretStore implements MasterSecretStore {
   }
 }
 
-/** In-memory Merkle tree store (NOT for production use) */
+/**
+ * In-memory Merkle tree store
+ *
+ * WARNING: NOT SUITABLE FOR PRODUCTION USE
+ * - Trees are lost when the process restarts
+ * - Merkle proofs cannot be generated after restart
+ *
+ * For production, implement MerkleTreeStore interface with:
+ * - Database storage (store serialized tree JSON)
+ * - File storage with backup
+ */
 class InMemoryMerkleTreeStore implements MerkleTreeStore {
   private trees = new Map<string, MerkleTree>();
   async set(videoId: string, tree: MerkleTree): Promise<void> {
@@ -293,11 +315,39 @@ export class StreamLockCreator {
     };
   }
 
-  /** Get videos by creator */
-  async getVideos(_creatorAddress: string): Promise<Video[]> {
-    // This would need to be implemented via indexer or events
-    // For now, return empty array
-    return [];
+  /**
+   * Get videos by creator
+   *
+   * Uses the Aptos indexer to query VideoRegisteredEvent events and
+   * enriches with on-chain video data.
+   *
+   * Note: This method only returns on-chain data. For full video metadata
+   * (title, description), you'll need to store and retrieve from your
+   * own database during the upload process.
+   *
+   * @param creatorAddress - Creator's Aptos address
+   * @param limit - Maximum number of videos to return (default: 100)
+   * @returns Array of videos with on-chain data
+   */
+  async getVideos(creatorAddress: string, limit = 100): Promise<Video[]> {
+    // Query videos from on-chain using indexer
+    const onChainVideos = await this.contract.getVideosByCreator(creatorAddress, limit);
+
+    // Map to Video interface
+    return onChainVideos.map((v) => ({
+      videoId: v.videoId,
+      creator: v.creator,
+      title: '', // Not stored on-chain - fetch from your database
+      description: '', // Not stored on-chain - fetch from your database
+      contentUri: v.contentUri,
+      thumbnailUri: v.thumbnailUri || undefined,
+      durationSeconds: v.durationSeconds,
+      totalSegments: v.totalSegments,
+      pricePerSegment: v.pricePerSegment,
+      merkleRoot: v.keyCommitmentRoot,
+      isActive: v.isActive,
+      createdAt: v.createdAt,
+    }));
   }
 
   /** Deactivate a video */

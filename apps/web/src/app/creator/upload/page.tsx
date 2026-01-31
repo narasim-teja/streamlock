@@ -12,7 +12,7 @@ import { Textarea } from '@/components/ui/Textarea';
 import { Label } from '@/components/ui/Label';
 import { Progress } from '@/components/ui/Progress';
 import { Alert, AlertDescription } from '@/components/ui/Alert';
-import { config } from '@/lib/config';
+import { config, getAptosFullnodeUrl } from '@/lib/config';
 import {
   Upload,
   Video,
@@ -75,7 +75,7 @@ export default function UploadPage() {
 
     try {
       const response = await fetch(
-        `https://fullnode.testnet.aptoslabs.com/v1/view`,
+        `${getAptosFullnodeUrl()}/view`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -122,8 +122,7 @@ export default function UploadPage() {
       // Wait a bit for the transaction to be indexed
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setIsCreatorRegistered(true);
-    } catch (err) {
-      console.error('Failed to register creator:', err);
+    } catch {
       setError('Failed to register as creator. Please try again.');
     } finally {
       setIsRegistering(false);
@@ -184,7 +183,7 @@ export default function UploadPage() {
             // Fetch transaction to get events
             try {
               const txResponse = await fetch(
-                `https://fullnode.testnet.aptoslabs.com/v1/transactions/by_hash/${txResult.hash}`
+                `${getAptosFullnodeUrl()}/transactions/by_hash/${txResult.hash}`
               );
               const txData = await txResponse.json();
 
@@ -204,14 +203,13 @@ export default function UploadPage() {
                   }),
                 });
               }
-            } catch (eventError) {
-              console.warn('Could not fetch transaction events:', eventError);
+            } catch {
+              // Failed to fetch events - video ID won't be updated
             }
           }
-        } catch (txError) {
-          // Transaction was rejected or failed
-          // Video is still stored locally, just not on-chain
-          console.warn('On-chain registration skipped:', txError);
+        } catch {
+          // Transaction was rejected or failed - throw to show error
+          throw new Error('On-chain registration failed. Video was uploaded but not registered on blockchain.');
         }
       }
 
@@ -222,7 +220,6 @@ export default function UploadPage() {
         router.push(`/watch/${result.data.videoId}`);
       }, 2000);
     } catch (err) {
-      console.error('Upload error:', err);
       setError(err instanceof Error ? err.message : 'Upload failed');
       setStage('error');
     }

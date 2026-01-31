@@ -10,7 +10,24 @@ export const config = {
   supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL || '',
 } as const;
 
-// Validate required config at import time (development warning)
-if (typeof window !== 'undefined' && !config.contractAddress) {
-  console.warn('NEXT_PUBLIC_CONTRACT_ADDRESS is not set');
+/**
+ * Get the Aptos fullnode URL for the configured network
+ */
+export function getAptosFullnodeUrl(): string {
+  switch (config.aptosNetwork) {
+    case 'mainnet':
+      return 'https://fullnode.mainnet.aptoslabs.com/v1';
+    case 'devnet':
+      return 'https://fullnode.devnet.aptoslabs.com/v1';
+    case 'testnet':
+    default:
+      return 'https://fullnode.testnet.aptoslabs.com/v1';
+  }
+}
+
+// Validate required config at import time
+if (typeof window !== 'undefined') {
+  if (!config.contractAddress) {
+    throw new Error('NEXT_PUBLIC_CONTRACT_ADDRESS environment variable is required');
+  }
 }

@@ -34,8 +34,14 @@ export function getStorageProvider(): StorageProvider {
       bucketName,
     });
   } else if (provider === 'local') {
-    const basePath = process.env.LOCAL_STORAGE_PATH || './storage';
-    const baseUrl = process.env.LOCAL_STORAGE_URL || 'http://localhost:3000/storage';
+    const basePath = process.env.LOCAL_STORAGE_PATH;
+    const baseUrl = process.env.LOCAL_STORAGE_URL;
+
+    if (!basePath || !baseUrl) {
+      throw new Error(
+        'LOCAL_STORAGE_PATH and LOCAL_STORAGE_URL are required for local storage'
+      );
+    }
 
     storageProvider = new LocalStorageProvider({
       basePath,

@@ -114,25 +114,21 @@ export async function processVideo(
     validateVideoConstraints(videoMetadata);
 
     // 4. Segment video with FFmpeg
-    console.log(`[VideoProcessor] Segmenting video: ${videoId}`);
     const segments = await segmentVideo(inputPath, {
       segmentDuration,
       quality,
     });
-    console.log(`[VideoProcessor] Created ${segments.length} segments`);
 
     const totalSegments = segments.length;
     const durationSeconds = Math.ceil(metadata.duration);
 
     // 5. Generate cryptographic material
-    console.log(`[VideoProcessor] Generating crypto material`);
     const masterSecret = generateMasterSecret();
     const keys = deriveAllSegmentKeys(masterSecret, videoId, totalSegments);
     const merkleTree = buildMerkleTree(keys);
     const merkleRoot = getMerkleRoot(merkleTree);
 
     // 6. Encrypt segments
-    console.log(`[VideoProcessor] Encrypting ${totalSegments} segments`);
     const { encryptedSegments, ivs } = await encryptVideoSegments(
       segments,
       keys,
@@ -140,22 +136,13 @@ export async function processVideo(
       masterSecret
     );
 
-    // Debug: Log first segment's key and IV for verification
-    if (keys.length > 0 && ivs.length > 0) {
-      console.log(`[VideoProcessor] Segment 0 Key (hex): ${keys[0].toString('hex')}`);
-      console.log(`[VideoProcessor] Segment 0 IV (hex): ${ivs[0].toString('hex')}`);
-    }
-
     // 7. Generate HLS package
-    console.log(`[VideoProcessor] Generating HLS package`);
     const hlsPackage = generateHLSPackage(
       encryptedSegments,
       ivs,
       videoId,
       keyServerBaseUrl
     );
-
-    console.log(`[VideoProcessor] Processing complete for video: ${videoId}`);
 
     return {
       totalSegments,
@@ -175,8 +162,8 @@ export async function processVideo(
     );
   } finally {
     // 8. Cleanup temp directory
-    await rm(tempDir, { recursive: true, force: true }).catch((err) => {
-      console.warn(`[VideoProcessor] Failed to cleanup temp directory: ${err}`);
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {
+      // Cleanup failure is non-critical
     });
   }
 }
