@@ -288,4 +288,9 @@ export class X402KeyLoader {
   getNetwork(): string {
     return this.network;
   }
+
+  /** Update the signer function (for wallet adapter reference stability) */
+  updateSigner(signer: Account | SignAndSubmitTransactionFunction): void {
+    this.paymentClient.updateSigner(signer);
+  }
 }

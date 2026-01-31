@@ -508,4 +508,29 @@ export class StreamLockPlayer {
     this.sessionManager = null;
     this.currentVideo = null;
   }
+
+  /**
+   * Update the wallet signer function
+   * Call this when the wallet adapter recreates the signAndSubmitTransaction function
+   * to keep the player's signer reference current
+   */
+  updateSigner(signAndSubmit: SignAndSubmitTransactionFunction, address?: string): void {
+    if (this.signer?.type === 'wallet') {
+      this.signer = {
+        type: 'wallet',
+        signAndSubmit,
+        address: address ?? this.signer.address,
+      };
+
+      // Propagate to payment client
+      if (this.paymentClient) {
+        this.paymentClient.updateSigner(signAndSubmit);
+      }
+
+      // Propagate to key loader
+      if (this.keyLoader) {
+        this.keyLoader.updateSigner(signAndSubmit);
+      }
+    }
+  }
 }

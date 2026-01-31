@@ -91,12 +91,35 @@ export default function WatchPage() {
   // Player state
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const hlsVideoIdRef = useRef<string | null>(null); // Track which video the HLS instance is for
   const keyLoaderRef = useRef<X402KeyLoader | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [currentKeySegment, setCurrentKeySegment] = useState<number | null>(null);
   const [isLoadingKey, setIsLoadingKey] = useState(false);
+
+  // Ref to track latest signer function (wallet adapters recreate this frequently)
+  // This prevents HLS player from being destroyed when signAndSubmitTransaction changes
+  const signerRef = useRef<typeof signAndSubmitTransaction | null>(null);
+  // Refs to track latest session and video objects (for use inside effects without triggering re-runs)
+  const sessionRef = useRef<SessionState | null>(null);
+  const videoMetaRef = useRef<VideoInfo | null>(null);
+  // Stable address string for dependency tracking
+  const accountAddressStr = account?.address?.toString();
+
+  // Keep refs updated - these run on every change but do NOT trigger HLS re-initialization
+  useEffect(() => {
+    signerRef.current = signAndSubmitTransaction;
+  }, [signAndSubmitTransaction]);
+
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  useEffect(() => {
+    videoMetaRef.current = video;
+  }, [video]);
 
   // Fetch video metadata
   useEffect(() => {
@@ -119,35 +142,57 @@ export default function WatchPage() {
 
   // Initialize HLS.js player when session starts
   useEffect(() => {
-    if (!session || !video || !videoRef.current || !signAndSubmitTransaction || !account?.address) return;
+    // Use refs to get latest values without triggering effect re-runs on object changes
+    const currentSigner = signerRef.current;
+    const currentSession = sessionRef.current;
+    const currentVideo = videoMetaRef.current;
+
+    if (!currentSession || !currentVideo || !videoRef.current || !currentSigner || !accountAddressStr) return;
 
     const videoEl = videoRef.current;
 
-    // Clean up previous instance
+    // Track if this effect instance is still active (for React 18 StrictMode)
+    let isActive = true;
+
+    // Skip if HLS instance already exists for this exact video (React 18 StrictMode double-run)
+    // Only recreate if the video actually changed
+    if (hlsRef.current && hlsVideoIdRef.current === currentVideo.videoId) {
+      console.log('[StreamLock] HLS instance already exists for this video, skipping recreation');
+      return;
+    }
+
+    // Destroy previous instance if it's for a different video
     if (hlsRef.current) {
+      console.log('[StreamLock] Destroying HLS instance for previous video');
       hlsRef.current.destroy();
+      hlsRef.current = null;
+      hlsVideoIdRef.current = null;
     }
 
     if (Hls.isSupported()) {
       // Create Aptos client
       const aptosClient = createAptosClient();
 
-      // Wrap the wallet adapter's signAndSubmitTransaction to match SDK's expected signature
-      // Wallet adapter expects { data: payload } but SDK passes payload directly
-      const signerWrapper = async (payload: Parameters<typeof signAndSubmitTransaction>[0]['data']) => {
-        const result = await signAndSubmitTransaction({ data: payload });
+      // Create a stable signer wrapper that reads from ref at call time
+      // This ensures we always use the latest signer function even if it gets recreated
+      const signerWrapper = async (payload: Parameters<NonNullable<typeof signAndSubmitTransaction>>[0]['data']) => {
+        const signer = signerRef.current;
+        if (!signer) {
+          throw new Error('Wallet not connected');
+        }
+        const result = await signer({ data: payload });
         return result;
       };
 
       // Create key loader for x402 payment flow
       const keyLoader = new X402KeyLoader({
         keyServerBaseUrl: '/api',
-        sessionId: session.sessionId,
-        videoId: session.videoId,
-        localVideoId: video.videoId,
+        sessionId: currentSession.sessionId,
+        videoId: currentSession.videoId,
+        localVideoId: currentVideo.videoId,
         aptosClient,
         contractAddress: config.contractAddress,
-        accountAddress: account.address.toString(),
+        accountAddress: accountAddressStr!,
         signer: signerWrapper,
         onPayment: (segmentIndex, txHash, amount) => {
           console.log(`[StreamLock] Payment for segment ${segmentIndex}: ${txHash}`);
@@ -196,15 +241,33 @@ export default function WatchPage() {
         },
       });
 
-      // Create HLS instance with custom loader
+      // Create HLS instance with custom loader and buffer gap handling
       const hls = new Hls({
         debug: true, // Enable debug to see what's happening
         enableWorker: true,
         loader: X402Loader,
+        // Buffer gap handling - important for encrypted streams
+        maxBufferHole: 0.5, // Allow up to 0.5s buffer holes
+        maxMaxBufferLength: 30, // Buffer up to 30 seconds
+        startPosition: -1, // Start from the beginning, let HLS.js figure out the position
+        nudgeOffset: 0.1, // Nudge amount when stalled
+        nudgeMaxRetry: 5, // Max nudge retries before giving up
+        // Fix for Arc browser - don't let HLS.js manage backBuffer aggressively
+        backBufferLength: Infinity,
+        // Prevent liveSyncDuration from interfering
+        liveSyncDuration: undefined,
+        liveMaxLatencyDuration: undefined,
       });
 
-      hls.loadSource(video.contentUri);
+      // IMPORTANT: Attach media FIRST, then load source
+      // This ensures MediaSource is properly bound before loading starts
       hls.attachMedia(videoEl);
+
+      // Wait for MEDIA_ATTACHED event before loading source
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+        console.log('[StreamLock] Media attached, loading source...');
+        hls.loadSource(currentVideo.contentUri);
+      });
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         console.log('[StreamLock] Manifest parsed, ready to play');
@@ -223,11 +286,29 @@ export default function WatchPage() {
         console.log('[StreamLock] Fragment DECRYPTED:', data.frag.sn);
       });
 
+      // Track if we've already tried to autoplay
+      let hasTriedAutoplay = false;
+
       hls.on(Hls.Events.FRAG_BUFFERED, (event, data) => {
         console.log('[StreamLock] Fragment buffered:', data.frag.sn);
-        videoEl.play().catch((err) => {
-          console.log('[StreamLock] Autoplay blocked:', err.message);
-        });
+        // Only try autoplay once after first fragment is buffered
+        if (!hasTriedAutoplay) {
+          hasTriedAutoplay = true;
+          // Wait a bit for the buffer to stabilize, then seek past any gap and play
+          setTimeout(() => {
+            // Seek to the start of the buffered range if there's a gap
+            if (videoEl.buffered.length > 0) {
+              const bufferStart = videoEl.buffered.start(0);
+              if (bufferStart > 0.01 && videoEl.currentTime < bufferStart) {
+                console.log(`[StreamLock] Seeking past buffer gap from ${videoEl.currentTime} to ${bufferStart}`);
+                videoEl.currentTime = bufferStart;
+              }
+            }
+            videoEl.play().catch((err) => {
+              console.log('[StreamLock] Autoplay blocked:', err.message);
+            });
+          }, 100);
+        }
       });
 
       hls.on(Hls.Events.ERROR, (event, data) => {
@@ -252,6 +333,8 @@ export default function WatchPage() {
       });
 
       hlsRef.current = hls;
+      hlsVideoIdRef.current = currentVideo.videoId;
+      console.log('[StreamLock] HLS instance created and attached for video:', currentVideo.videoId);
     } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
       // Native HLS support (Safari) - won't work with x402 payment flow
       // Safari would need a service worker approach for custom key loading
@@ -259,16 +342,19 @@ export default function WatchPage() {
     }
 
     return () => {
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
-      }
-      if (keyLoaderRef.current) {
-        keyLoaderRef.current.clearCache();
-        keyLoaderRef.current = null;
-      }
+      // Don't destroy HLS here - prevents React 18 StrictMode from closing MediaSource
+      // Cleanup happens at:
+      // - Effect start (lines 165-170) on dependency change
+      // - handleEndSession on session end
+      isActive = false;
     };
-  }, [session, video, signAndSubmitTransaction, account?.address]);
+    // Note: signAndSubmitTransaction intentionally excluded - accessed via signerRef
+    // to prevent HLS destruction when wallet adapter recreates the function
+    // Using primitive values for stable comparison:
+    // - session?.sessionId (bigint) instead of session (object)
+    // - video?.videoId (string) instead of video (object)
+    // - accountAddressStr (string) instead of account?.address (object)
+  }, [session?.sessionId, video?.videoId, accountAddressStr]);
 
   // Video element event handlers
   useEffect(() => {
@@ -291,11 +377,13 @@ export default function WatchPage() {
       videoEl.removeEventListener('play', handlePlay);
       videoEl.removeEventListener('pause', handlePause);
     };
-  }, [session]);
+    // Only re-attach when session presence changes (null ↔ active)
+  }, [!!session]);
 
   // Start session
   const handleStartSession = useCallback(async () => {
-    if (!video || !account?.address || !signAndSubmitTransaction) return;
+    const currentSigner = signerRef.current;
+    if (!video || !account?.address || !currentSigner) return;
 
     setSessionLoading(true);
     setError(null);
@@ -315,7 +403,7 @@ export default function WatchPage() {
           ],
         };
 
-        const pendingTx = await signAndSubmitTransaction({ data: payload });
+        const pendingTx = await currentSigner({ data: payload });
 
         // Wait for transaction and extract session info from events
         const aptosClient = createAptosClient();
@@ -377,11 +465,13 @@ export default function WatchPage() {
     } finally {
       setSessionLoading(false);
     }
-  }, [video, account, signAndSubmitTransaction]);
+    // Note: signAndSubmitTransaction accessed via signerRef to avoid unstable dependency
+  }, [video, account]);
 
   // Top up session
   const handleTopUp = useCallback(async () => {
-    if (!session || !video || !signAndSubmitTransaction) return;
+    const currentSigner = signerRef.current;
+    if (!session || !video || !currentSigner) return;
 
     setSessionLoading(true);
     setError(null);
@@ -399,7 +489,7 @@ export default function WatchPage() {
           ],
         };
 
-        await signAndSubmitTransaction({ data: payload });
+        await currentSigner({ data: payload });
       }
 
       // Update local session state
@@ -422,7 +512,8 @@ export default function WatchPage() {
     } finally {
       setSessionLoading(false);
     }
-  }, [session, video, signAndSubmitTransaction]);
+    // Note: signAndSubmitTransaction accessed via signerRef to avoid unstable dependency
+  }, [session, video]);
 
   // End session
   const handleEndSession = useCallback(async () => {
@@ -431,13 +522,14 @@ export default function WatchPage() {
     setSessionLoading(true);
     try {
       // End on-chain session if applicable
-      if (video?.onChainVideoId && session.sessionId > 0n && signAndSubmitTransaction) {
+      const currentSigner = signerRef.current;
+      if (video?.onChainVideoId && session.sessionId > 0n && currentSigner) {
         try {
           const payload = {
             function: `${config.contractAddress}::protocol::end_session` as `${string}::${string}::${string}`,
             functionArguments: [session.sessionId.toString()],
           };
-          await signAndSubmitTransaction({ data: payload });
+          await currentSigner({ data: payload });
         } catch (err) {
           console.warn('Failed to end on-chain session:', err);
           // Continue with cleanup even if on-chain fails
@@ -448,6 +540,7 @@ export default function WatchPage() {
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
+        hlsVideoIdRef.current = null;
       }
 
       // Cleanup key loader
@@ -470,7 +563,8 @@ export default function WatchPage() {
     } finally {
       setSessionLoading(false);
     }
-  }, [session, video, signAndSubmitTransaction]);
+    // Note: signAndSubmitTransaction accessed via signerRef to avoid unstable dependency
+  }, [session, video]);
 
   // Calculate current segment based on time (5 seconds per segment)
   const currentSegment = video ? Math.floor(currentTime / 5) : 0;
@@ -599,23 +693,21 @@ export default function WatchPage() {
                     </Button>
                   </div>
                 </div>
-              ) : (
-                <>
-                  <video
-                    ref={videoRef}
-                    className="w-full h-full"
-                    controls
-                    playsInline
-                    poster={video?.thumbnailUri || undefined}
-                  />
-                  {/* Key loading indicator */}
-                  {isLoadingKey && (
-                    <div className="absolute top-4 right-4 bg-black/70 px-3 py-2 rounded-lg flex items-center gap-2 text-white text-sm">
-                      <Lock className="h-4 w-4 animate-pulse" />
-                      Unlocking segment {currentKeySegment !== null ? currentKeySegment + 1 : ''}...
-                    </div>
-                  )}
-                </>
+              ) : null}
+              {/* Always render video element to prevent MediaSource from closing on re-renders */}
+              <video
+                ref={videoRef}
+                className={`w-full h-full ${!session ? 'hidden' : ''}`}
+                controls
+                playsInline
+                poster={video?.thumbnailUri || undefined}
+              />
+              {/* Key loading indicator */}
+              {session && isLoadingKey && (
+                <div className="absolute top-4 right-4 bg-black/70 px-3 py-2 rounded-lg flex items-center gap-2 text-white text-sm">
+                  <Lock className="h-4 w-4 animate-pulse" />
+                  Unlocking segment {currentKeySegment !== null ? currentKeySegment + 1 : ''}...
+                </div>
               )}
             </div>
 

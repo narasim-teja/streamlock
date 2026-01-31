@@ -116,6 +116,20 @@ export function useStreamLockPlayer(
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<StreamLockPlayer | null>(null);
   const timeUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Ref to track latest signer function (wallet adapters recreate this frequently)
+  const signerRef = useRef<SignAndSubmitTransactionFunction | undefined>(undefined);
+  const accountAddressRef = useRef<string | undefined>(undefined);
+
+  // Keep signer ref updated and propagate to player
+  useEffect(() => {
+    signerRef.current = signAndSubmitTransaction;
+    accountAddressRef.current = accountAddress;
+
+    // Update player's signer if session is active (player exists and has a session)
+    if (playerRef.current && signAndSubmitTransaction && accountAddress) {
+      playerRef.current.updateSigner(signAndSubmitTransaction, accountAddress);
+    }
+  }, [signAndSubmitTransaction, accountAddress]);
 
   // Create player on mount
   useEffect(() => {
@@ -216,7 +230,11 @@ export function useStreamLockPlayer(
         throw new Error('Player not initialized');
       }
 
-      if (!signAndSubmitTransaction || !accountAddress) {
+      // Get current signer from ref (avoids dependency on unstable signAndSubmitTransaction)
+      const currentSigner = signerRef.current;
+      const currentAddress = accountAddressRef.current;
+
+      if (!currentSigner || !currentAddress) {
         throw new Error('Wallet not connected');
       }
 
@@ -228,10 +246,10 @@ export function useStreamLockPlayer(
       setError(null);
 
       try {
-        // Start session with wallet
+        // Start session with wallet (uses current signer from ref)
         const sessionInfo = await playerRef.current.startSessionWithWallet(
-          signAndSubmitTransaction,
-          accountAddress,
+          currentSigner,
+          currentAddress,
           prepaidSegments
         );
 
@@ -255,7 +273,7 @@ export function useStreamLockPlayer(
         setIsLoading(false);
       }
     },
-    [isInitialized, signAndSubmitTransaction, accountAddress, videoInfo]
+    [isInitialized, videoInfo] // signAndSubmitTransaction and accountAddress REMOVED - accessed via refs
   );
 
   // Play

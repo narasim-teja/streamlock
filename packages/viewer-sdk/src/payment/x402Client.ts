@@ -150,4 +150,10 @@ export class X402PaymentClient {
   async isSegmentPaid(sessionId: bigint, segmentIndex: number): Promise<boolean> {
     return this.contract.isSegmentPaid(sessionId, segmentIndex);
   }
+
+  /** Update the signer function (for wallet adapter reference stability) */
+  updateSigner(signer: Account | SignAndSubmitTransactionFunction): void {
+    this.signer = signer;
+    this.isWalletAdapter = typeof signer === 'function';
+  }
 }
