@@ -34,6 +34,7 @@
     "@supabase/supabase-js": "^2.45.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "dotenv": "^17.2.3",
     "drizzle-orm": "^0.38.0",
     "hls.js": "^1.5.0",
     "hono": "^4.7.0",

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useWallet } from '@aptos-labs/wallet-adapter-react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -12,6 +12,7 @@ import { Textarea } from '@/components/ui/Textarea';
 import { Label } from '@/components/ui/Label';
 import { Progress } from '@/components/ui/Progress';
 import { Alert, AlertDescription } from '@/components/ui/Alert';
+import { config } from '@/lib/config';
 import {
   Upload,
   Video,
@@ -21,6 +22,7 @@ import {
   CheckCircle,
   AlertCircle,
   Loader2,
+  UserPlus,
 } from 'lucide-react';
 
 type UploadStage =
@@ -64,6 +66,69 @@ export default function UploadPage() {
   const [stage, setStage] = useState<UploadStage>('idle');
   const [error, setError] = useState<string | null>(null);
   const [uploadedVideoId, setUploadedVideoId] = useState<string | null>(null);
+  const [isCreatorRegistered, setIsCreatorRegistered] = useState<boolean | null>(null);
+  const [isRegistering, setIsRegistering] = useState(false);
+
+  // Check if creator is registered on-chain
+  const checkCreatorRegistration = useCallback(async () => {
+    if (!account?.address || !config.contractAddress) return;
+
+    try {
+      const response = await fetch(
+        `https://fullnode.testnet.aptoslabs.com/v1/view`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            function: `${config.contractAddress}::protocol::get_creator`,
+            type_arguments: [],
+            arguments: [account.address],
+          }),
+        }
+      );
+
+      if (response.ok) {
+        setIsCreatorRegistered(true);
+      } else {
+        setIsCreatorRegistered(false);
+      }
+    } catch {
+      // If the view function fails, creator is not registered
+      setIsCreatorRegistered(false);
+    }
+  }, [account?.address]);
+
+  useEffect(() => {
+    if (connected && account?.address) {
+      checkCreatorRegistration();
+    }
+  }, [connected, account?.address, checkCreatorRegistration]);
+
+  // Register as creator
+  const handleRegisterCreator = async () => {
+    if (!signAndSubmitTransaction || !account?.address) return;
+
+    setIsRegistering(true);
+    setError(null);
+
+    try {
+      await signAndSubmitTransaction({
+        data: {
+          function: `${config.contractAddress}::protocol::register_creator` as `${string}::${string}::${string}`,
+          functionArguments: [''], // Empty metadata URI
+        },
+      });
+
+      // Wait a bit for the transaction to be indexed
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      setIsCreatorRegistered(true);
+    } catch (err) {
+      console.error('Failed to register creator:', err);
+      setError('Failed to register as creator. Please try again.');
+    } finally {
+      setIsRegistering(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,9 +172,42 @@ export default function UploadPage() {
         setStage('registering');
 
         try {
-          await signAndSubmitTransaction({
+          const txResult = await signAndSubmitTransaction({
             data: result.payload,
           });
+
+          // Wait for transaction to be indexed and get the video ID from events
+          if (txResult?.hash) {
+            // Wait a bit for indexing
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+
+            // Fetch transaction to get events
+            try {
+              const txResponse = await fetch(
+                `https://fullnode.testnet.aptoslabs.com/v1/transactions/by_hash/${txResult.hash}`
+              );
+              const txData = await txResponse.json();
+
+              // Find VideoRegisteredEvent to get the on-chain video ID
+              const videoEvent = txData.events?.find(
+                (e: { type: string }) => e.type.includes('VideoRegisteredEvent')
+              );
+
+              if (videoEvent?.data?.video_id) {
+                // Update our database with the on-chain video ID
+                await fetch(`/api/videos/${result.data.videoId}/register`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    onChainVideoId: videoEvent.data.video_id,
+                    txHash: txResult.hash,
+                  }),
+                });
+              }
+            } catch (eventError) {
+              console.warn('Could not fetch transaction events:', eventError);
+            }
+          }
         } catch (txError) {
           // Transaction was rejected or failed
           // Video is still stored locally, just not on-chain
@@ -165,6 +263,52 @@ export default function UploadPage() {
             </p>
             <ConnectButton />
           </div>
+        ) : isCreatorRegistered === null ? (
+          <div className="text-center py-20">
+            <Loader2 className="h-8 w-8 mx-auto mb-4 animate-spin text-muted-foreground" />
+            <p className="text-muted-foreground">Checking creator registration...</p>
+          </div>
+        ) : isCreatorRegistered === false ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <UserPlus className="h-5 w-5" />
+                Register as Creator
+              </CardTitle>
+              <CardDescription>
+                You need to register as a creator on-chain before uploading videos.
+                This is a one-time setup.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {error && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+              <Button
+                onClick={handleRegisterCreator}
+                disabled={isRegistering}
+                className="w-full"
+              >
+                {isRegistering ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Registering...
+                  </>
+                ) : (
+                  <>
+                    <UserPlus className="h-4 w-4 mr-2" />
+                    Register as Creator
+                  </>
+                )}
+              </Button>
+              <p className="text-sm text-muted-foreground text-center">
+                This will create your creator profile on the Aptos blockchain.
+              </p>
+            </CardContent>
+          </Card>
         ) : (
           <Card>
             <CardHeader>

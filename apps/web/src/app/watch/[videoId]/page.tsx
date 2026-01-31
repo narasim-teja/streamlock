@@ -13,6 +13,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/Separator';
 import { formatApt, truncateAddress } from '@streamlock/common';
+import { config } from '@/lib/config';
 import {
   Play,
   Pause,
@@ -140,7 +141,7 @@ export default function WatchPage() {
       if (video.onChainVideoId) {
         // Build transaction payload
         const payload = {
-          function: `${process.env.NEXT_PUBLIC_CONTRACT_ADDRESS}::protocol::start_session` as `${string}::${string}::${string}`,
+          function: `${config.contractAddress}::protocol::start_session` as `${string}::${string}::${string}`,
           functionArguments: [
             video.onChainVideoId, // video_id
             prepaidSegments.toString(), // prepaid_segments
