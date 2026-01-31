@@ -60,7 +60,7 @@ export interface UseStreamLockPlayerState {
 /** Player actions */
 export interface UseStreamLockPlayerActions {
   /** Initialize player with video */
-  initialize: (videoId: string) => Promise<VideoInfo>;
+  initialize: (videoId: bigint, localVideoId: string) => Promise<VideoInfo>;
   /** Start session and attach to video element */
   startAndPlay: (
     videoRef: RefObject<HTMLVideoElement>,
@@ -97,7 +97,7 @@ export function useStreamLockPlayer(
     keyServerBaseUrl,
     accountAddress,
     signAndSubmitTransaction,
-    isConnected,
+    isConnected: _isConnected, // Used for validation
   } = config;
 
   // State
@@ -182,7 +182,7 @@ export function useStreamLockPlayer(
 
   // Initialize player with video
   const initialize = useCallback(
-    async (videoId: string): Promise<VideoInfo> => {
+    async (videoId: bigint, localVideoId: string): Promise<VideoInfo> => {
       if (!playerRef.current) {
         throw new Error('Player not created');
       }
@@ -191,7 +191,7 @@ export function useStreamLockPlayer(
       setError(null);
 
       try {
-        const info = await playerRef.current.initialize(videoId);
+        const info = await playerRef.current.initialize(videoId, localVideoId);
         setVideoInfo(info);
         setIsInitialized(true);
         return info;

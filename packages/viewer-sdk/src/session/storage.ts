@@ -22,13 +22,13 @@ export interface SessionStorage {
   save(viewerAddress: string, session: SessionInfo): Promise<void>;
 
   /** Load a session for a specific video */
-  load(videoId: string, viewerAddress: string): Promise<SessionInfo | null>;
+  load(videoId: bigint | string, viewerAddress: string): Promise<SessionInfo | null>;
 
   /** Load all active sessions for a viewer */
   loadAll(viewerAddress: string): Promise<SessionInfo[]>;
 
   /** Clear a specific session */
-  clear(sessionId: string): Promise<void>;
+  clear(sessionId: bigint | string): Promise<void>;
 
   /** Clear all sessions for a viewer */
   clearAll(viewerAddress: string): Promise<void>;
@@ -69,8 +69,8 @@ export class LocalStorageSessionStorage implements SessionStorage {
     session: SessionInfo
   ): SerializedSession {
     return {
-      sessionId: session.sessionId,
-      videoId: session.videoId,
+      sessionId: session.sessionId.toString(),
+      videoId: session.videoId.toString(),
       viewerAddress,
       prepaidBalance: session.prepaidBalance.toString(),
       segmentsPaid: session.segmentsPaid,
@@ -82,8 +82,8 @@ export class LocalStorageSessionStorage implements SessionStorage {
 
   private deserializeSession(serialized: SerializedSession): SessionInfo {
     return {
-      sessionId: serialized.sessionId,
-      videoId: serialized.videoId,
+      sessionId: BigInt(serialized.sessionId),
+      videoId: BigInt(serialized.videoId),
       prepaidBalance: BigInt(serialized.prepaidBalance),
       segmentsPaid: serialized.segmentsPaid,
       expiresAt: serialized.expiresAt,
@@ -92,17 +92,17 @@ export class LocalStorageSessionStorage implements SessionStorage {
 
   async save(viewerAddress: string, session: SessionInfo): Promise<void> {
     const sessions = this.getAll();
-    const key = `${viewerAddress}:${session.videoId}`;
+    const key = `${viewerAddress}:${session.videoId.toString()}`;
     sessions.set(key, this.serializeSession(viewerAddress, session));
     this.saveAll(sessions);
   }
 
   async load(
-    videoId: string,
+    videoId: bigint | string,
     viewerAddress: string
   ): Promise<SessionInfo | null> {
     const sessions = this.getAll();
-    const key = `${viewerAddress}:${videoId}`;
+    const key = `${viewerAddress}:${videoId.toString()}`;
     const serialized = sessions.get(key);
 
     if (!serialized) return null;
@@ -144,11 +144,12 @@ export class LocalStorageSessionStorage implements SessionStorage {
     return result;
   }
 
-  async clear(sessionId: string): Promise<void> {
+  async clear(sessionId: bigint | string): Promise<void> {
     const sessions = this.getAll();
+    const sessionIdStr = sessionId.toString();
 
     for (const [key, serialized] of sessions) {
-      if (serialized.sessionId === sessionId) {
+      if (serialized.sessionId === sessionIdStr) {
         sessions.delete(key);
         break;
       }
@@ -198,8 +199,8 @@ export class MemorySessionStorage implements SessionStorage {
     session: SessionInfo
   ): SerializedSession {
     return {
-      sessionId: session.sessionId,
-      videoId: session.videoId,
+      sessionId: session.sessionId.toString(),
+      videoId: session.videoId.toString(),
       viewerAddress,
       prepaidBalance: session.prepaidBalance.toString(),
       segmentsPaid: session.segmentsPaid,
@@ -211,8 +212,8 @@ export class MemorySessionStorage implements SessionStorage {
 
   private deserializeSession(serialized: SerializedSession): SessionInfo {
     return {
-      sessionId: serialized.sessionId,
-      videoId: serialized.videoId,
+      sessionId: BigInt(serialized.sessionId),
+      videoId: BigInt(serialized.videoId),
       prepaidBalance: BigInt(serialized.prepaidBalance),
       segmentsPaid: serialized.segmentsPaid,
       expiresAt: serialized.expiresAt,
@@ -220,15 +221,15 @@ export class MemorySessionStorage implements SessionStorage {
   }
 
   async save(viewerAddress: string, session: SessionInfo): Promise<void> {
-    const key = `${viewerAddress}:${session.videoId}`;
+    const key = `${viewerAddress}:${session.videoId.toString()}`;
     this.sessions.set(key, this.serializeSession(viewerAddress, session));
   }
 
   async load(
-    videoId: string,
+    videoId: bigint | string,
     viewerAddress: string
   ): Promise<SessionInfo | null> {
-    const key = `${viewerAddress}:${videoId}`;
+    const key = `${viewerAddress}:${videoId.toString()}`;
     const serialized = this.sessions.get(key);
 
     if (!serialized) return null;
@@ -260,9 +261,10 @@ export class MemorySessionStorage implements SessionStorage {
     return result;
   }
 
-  async clear(sessionId: string): Promise<void> {
+  async clear(sessionId: bigint | string): Promise<void> {
+    const sessionIdStr = sessionId.toString();
     for (const [key, serialized] of this.sessions) {
-      if (serialized.sessionId === sessionId) {
+      if (serialized.sessionId === sessionIdStr) {
         this.sessions.delete(key);
         break;
       }

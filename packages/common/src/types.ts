@@ -4,7 +4,8 @@
 
 /** Video metadata stored on-chain and in database */
 export interface Video {
-  videoId: string;
+  videoId: bigint;
+  localVideoId?: string; // String ID used for storage paths
   creator: string;
   title: string;
   description?: string;
@@ -30,8 +31,8 @@ export interface Creator {
 
 /** Viewing session with escrow */
 export interface ViewingSession {
-  sessionId: string;
-  videoId: string;
+  sessionId: bigint;
+  videoId: bigint;
   viewer: string;
   creator: string;
   segmentsPaid: number;
@@ -72,9 +73,9 @@ export interface X402PaymentOption {
   resource: string;
   payTo: string;
   extra: {
-    videoId: string;
+    videoId: string; // String representation for JSON transport
     segmentIndex: number;
-    sessionId: string;
+    sessionId: string; // String representation for JSON transport
     contractAddress: string;
     function: string;
   };
@@ -98,7 +99,8 @@ export interface UploadVideoOptions {
 
 /** Upload result */
 export interface UploadResult {
-  videoId: string;
+  videoId: bigint;
+  localVideoId: string; // String ID used for storage paths
   contentUri: string;
   thumbnailUri?: string;
   totalSegments: number;
@@ -108,8 +110,8 @@ export interface UploadResult {
 
 /** Session info for viewers */
 export interface SessionInfo {
-  sessionId: string;
-  videoId: string;
+  sessionId: bigint;
+  videoId: bigint;
   prepaidBalance: bigint;
   segmentsPaid: number;
   expiresAt: number;

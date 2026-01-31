@@ -15,6 +15,11 @@ export function aptToOctas(apt: number): bigint {
   return BigInt(Math.floor(apt * Number(OCTAS_PER_APT)));
 }
 
+/** Convert octas to APT */
+export function octasToApt(octas: bigint): number {
+  return Number(octas) / Number(OCTAS_PER_APT);
+}
+
 /** Format duration in seconds to human readable */
 export function formatDuration(seconds: number): string {
   const hours = Math.floor(seconds / 3600);

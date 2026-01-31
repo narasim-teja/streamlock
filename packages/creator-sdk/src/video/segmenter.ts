@@ -44,19 +44,23 @@ export async function segmentVideo(
       inputPath = input;
     } else if (Buffer.isBuffer(input)) {
       inputPath = join(tempDir, 'input.mp4');
-      await Bun.write(inputPath, input);
+      const { writeFile } = await import('fs/promises');
+      await writeFile(inputPath, input);
     } else {
       // File object
       inputPath = join(tempDir, 'input.mp4');
       const arrayBuffer = await input.arrayBuffer();
-      await Bun.write(inputPath, Buffer.from(arrayBuffer));
+      const { writeFile } = await import('fs/promises');
+      await writeFile(inputPath, Buffer.from(arrayBuffer));
     }
 
     const segmentPattern = join(tempDir, 'segment_%03d.ts');
 
-    // Run FFmpeg segmentation
+    // Run FFmpeg segmentation with timeout
+    const FFMPEG_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
     await new Promise<void>((resolve, reject) => {
-      ffmpeg(inputPath)
+      let timedOut = false;
+      const command = ffmpeg(inputPath)
         .outputOptions([
           `-c:v libx264`,
           `-preset fast`,
@@ -71,11 +75,25 @@ export async function segmentVideo(
           `-map 0:a:0?`, // Optional audio
         ])
         .output(segmentPattern)
-        .on('end', () => resolve())
-        .on('error', (err) =>
-          reject(new VideoProcessingError(`FFmpeg error: ${err.message}`))
-        )
-        .run();
+        .on('end', () => {
+          if (!timedOut) resolve();
+        })
+        .on('error', (err) => {
+          if (!timedOut) {
+            reject(new VideoProcessingError(`FFmpeg error: ${err.message}`));
+          }
+        });
+
+      // Set timeout to kill hanging FFmpeg processes
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        command.kill('SIGKILL');
+        reject(new VideoProcessingError('FFmpeg processing timed out after 5 minutes'));
+      }, FFMPEG_TIMEOUT_MS);
+
+      command.on('end', () => clearTimeout(timeout));
+      command.on('error', () => clearTimeout(timeout));
+      command.run();
     });
 
     // Read segments
@@ -111,7 +129,9 @@ export async function segmentVideo(
     );
   } finally {
     // Cleanup temp directory
-    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    await rm(tempDir, { recursive: true, force: true }).catch((err) => {
+      console.warn(`Failed to cleanup temp directory ${tempDir}:`, err);
+    });
   }
 }
 
@@ -139,13 +159,26 @@ export function getVideoMetadata(
         return;
       }
 
+      // Parse frame rate safely (e.g., "30/1" -> 30)
+      let fps = 30;
+      if (videoStream.r_frame_rate) {
+        const parts = videoStream.r_frame_rate.split('/');
+        if (parts.length === 2) {
+          const numerator = parseFloat(parts[0]);
+          const denominator = parseFloat(parts[1]);
+          if (denominator !== 0) {
+            fps = numerator / denominator;
+          }
+        } else {
+          fps = parseFloat(videoStream.r_frame_rate) || 30;
+        }
+      }
+
       resolve({
         duration: metadata.format.duration ?? 0,
         width: videoStream.width ?? 0,
         height: videoStream.height ?? 0,
-        fps: videoStream.r_frame_rate
-          ? eval(videoStream.r_frame_rate) // "30/1" -> 30
-          : 30,
+        fps,
       });
     });
   });

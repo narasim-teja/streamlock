@@ -1,6 +1,6 @@
 'use client';
 
-import { useWallet, WalletReadyState } from '@aptos-labs/wallet-adapter-react';
+import { useWallet, WalletReadyState, type WalletName } from '@aptos-labs/wallet-adapter-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 
@@ -12,7 +12,7 @@ interface WalletModalProps {
 export function WalletModal({ open, onOpenChange }: WalletModalProps) {
   const { wallets, connect } = useWallet();
 
-  const handleConnect = async (walletName: string) => {
+  const handleConnect = async (walletName: WalletName) => {
     try {
       await connect(walletName);
       // Save last used wallet
@@ -24,7 +24,7 @@ export function WalletModal({ open, onOpenChange }: WalletModalProps) {
   };
 
   // Sort wallets: installed first, then by name
-  const sortedWallets = [...wallets].sort((a, b) => {
+  const sortedWallets = [...(wallets || [])].sort((a, b) => {
     const aInstalled = a.readyState === WalletReadyState.Installed;
     const bInstalled = b.readyState === WalletReadyState.Installed;
     if (aInstalled && !bInstalled) return -1;

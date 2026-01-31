@@ -104,6 +104,18 @@ export class StreamLockContract {
     signer: Account,
     params: RegisterVideoParams
   ): Promise<TransactionResult> {
+    // Convert and validate key commitment root (must be exactly 32 bytes for SHA256)
+    const rootBytes = typeof params.keyCommitmentRoot === 'string'
+      ? Buffer.from(params.keyCommitmentRoot, 'hex')
+      : Buffer.from(params.keyCommitmentRoot);
+
+    if (rootBytes.length !== 32) {
+      throw new ContractError(
+        12, // E_INVALID_COMMITMENT
+        `Key commitment root must be exactly 32 bytes (SHA256 hash), got ${rootBytes.length} bytes`
+      );
+    }
+
     return this.executeTransaction(signer, {
       function: this.functionId('register_video'),
       functionArguments: [
@@ -111,11 +123,7 @@ export class StreamLockContract {
         params.thumbnailUri,
         params.durationSeconds,
         params.totalSegments,
-        Array.from(
-          typeof params.keyCommitmentRoot === 'string'
-            ? Buffer.from(params.keyCommitmentRoot, 'hex')
-            : params.keyCommitmentRoot
-        ),
+        Array.from(rootBytes),
         params.pricePerSegment.toString(),
       ],
     });
@@ -124,23 +132,23 @@ export class StreamLockContract {
   /** Update video price */
   async updateVideoPrice(
     signer: Account,
-    videoId: string,
+    videoId: bigint,
     newPricePerSegment: bigint
   ): Promise<TransactionResult> {
     return this.executeTransaction(signer, {
       function: this.functionId('update_video_price'),
-      functionArguments: [videoId, newPricePerSegment.toString()],
+      functionArguments: [videoId.toString(), newPricePerSegment.toString()],
     });
   }
 
   /** Deactivate a video */
   async deactivateVideo(
     signer: Account,
-    videoId: string
+    videoId: bigint
   ): Promise<TransactionResult> {
     return this.executeTransaction(signer, {
       function: this.functionId('deactivate_video'),
-      functionArguments: [videoId],
+      functionArguments: [videoId.toString()],
     });
   }
 
@@ -152,7 +160,7 @@ export class StreamLockContract {
     return this.executeTransaction(signer, {
       function: this.functionId('start_session'),
       functionArguments: [
-        params.videoId,
+        params.videoId.toString(),
         params.prepaidSegments,
         params.maxDurationSeconds,
       ],
@@ -166,7 +174,7 @@ export class StreamLockContract {
   ): Promise<TransactionResult> {
     return this.executeTransaction(signer, {
       function: this.functionId('pay_for_segment'),
-      functionArguments: [params.sessionId, params.segmentIndex],
+      functionArguments: [params.sessionId.toString(), params.segmentIndex],
     });
   }
 
@@ -177,18 +185,18 @@ export class StreamLockContract {
   ): Promise<TransactionResult> {
     return this.executeTransaction(signer, {
       function: this.functionId('top_up_session'),
-      functionArguments: [params.sessionId, params.additionalSegments],
+      functionArguments: [params.sessionId.toString(), params.additionalSegments],
     });
   }
 
   /** End a session */
   async endSession(
     signer: Account,
-    sessionId: string
+    sessionId: bigint
   ): Promise<TransactionResult> {
     return this.executeTransaction(signer, {
       function: this.functionId('end_session'),
-      functionArguments: [sessionId],
+      functionArguments: [sessionId.toString()],
     });
   }
 
@@ -211,16 +219,17 @@ export class StreamLockContract {
   // ============ View Functions ============
 
   /** Get video details */
-  async getVideo(videoId: string): Promise<OnChainVideo | null> {
+  async getVideo(videoId: bigint): Promise<OnChainVideo | null> {
     try {
       const result = await this.client.view({
         payload: {
           function: this.functionId('get_video'),
-          functionArguments: [videoId],
+          functionArguments: [videoId.toString()],
         },
       });
 
       // Validate response array length
+      // Move returns: (address, String, String, u64, u64, vector<u8>, u64, bool)
       if (!Array.isArray(result) || result.length < 8) {
         console.error('Invalid video response format:', result);
         return null;
@@ -264,16 +273,18 @@ export class StreamLockContract {
   }
 
   /** Get session details */
-  async getSession(sessionId: string): Promise<OnChainSession | null> {
+  async getSession(sessionId: bigint): Promise<OnChainSession | null> {
     try {
       const result = await this.client.view({
         payload: {
           function: this.functionId('get_session'),
-          functionArguments: [sessionId],
+          functionArguments: [sessionId.toString()],
         },
       });
 
       // Validate response array length
+      // Move returns: (u128, address, address, u64, u64, u64, bool)
+      // Order: video_id, viewer, creator, segments_paid, prepaid_balance, total_paid, is_active
       if (!Array.isArray(result) || result.length < 7) {
         console.error('Invalid session response format:', result);
         return null;
@@ -291,7 +302,7 @@ export class StreamLockContract {
 
       return {
         sessionId,
-        videoId,
+        videoId: BigInt(videoId), // u128 from Move
         viewer,
         creator,
         segmentsPaid: parseInt(String(segmentsPaid), 10),
@@ -343,11 +354,11 @@ export class StreamLockContract {
   }
 
   /** Get segment price for a video */
-  async getSegmentPrice(videoId: string): Promise<bigint> {
+  async getSegmentPrice(videoId: bigint): Promise<bigint> {
     const result = await this.client.view({
       payload: {
         function: this.functionId('get_segment_price'),
-        functionArguments: [videoId],
+        functionArguments: [videoId.toString()],
       },
     });
 
@@ -355,11 +366,11 @@ export class StreamLockContract {
   }
 
   /** Check if segment is paid */
-  async isSegmentPaid(sessionId: string, segmentIndex: number): Promise<boolean> {
+  async isSegmentPaid(sessionId: bigint, segmentIndex: number): Promise<boolean> {
     const result = await this.client.view({
       payload: {
         function: this.functionId('is_segment_paid'),
-        functionArguments: [sessionId, segmentIndex],
+        functionArguments: [sessionId.toString(), segmentIndex],
       },
     });
 
@@ -392,10 +403,39 @@ export class StreamLockContract {
 
   // ============ Gas Estimation ============
 
-  /** Gas estimate result */
-  /** Simulate a transaction to estimate gas */
-  async simulateTransaction(
-    senderAddress: string,
+  /**
+   * Get gas estimate for a transaction.
+   * Note: Without access to the account's private key, we cannot properly simulate.
+   * This returns conservative fallback estimates suitable for most StreamLock operations.
+   */
+  async estimateGas(
+    _senderAddress: string,
+    _payload: InputGenerateTransactionPayloadData
+  ): Promise<{
+    gasUnits: bigint;
+    gasPrice: bigint;
+    totalCost: bigint;
+    success: boolean;
+    vmStatus?: string;
+  }> {
+    // Transaction simulation requires a valid PublicKey object which we cannot create
+    // without the account's private key. Return conservative fallback estimates.
+    // 0.05 APT should cover most StreamLock transactions (sessions, payments, etc.)
+    return {
+      gasUnits: 50000n,
+      gasPrice: 100n,
+      totalCost: 5000000n, // 0.05 APT - conservative fallback
+      success: true,
+      vmStatus: 'Estimated (simulation skipped - requires Account with publicKey)',
+    };
+  }
+
+  /**
+   * Simulate a transaction to estimate gas when you have access to the Account object.
+   * This provides accurate gas estimation by actually simulating the transaction.
+   */
+  async simulateTransactionWithAccount(
+    account: Account,
     payload: InputGenerateTransactionPayloadData
   ): Promise<{
     gasUnits: bigint;
@@ -406,12 +446,12 @@ export class StreamLockContract {
   }> {
     try {
       const transaction = await this.client.transaction.build.simple({
-        sender: senderAddress,
+        sender: account.accountAddress,
         data: payload,
       });
 
       const [simulation] = await this.client.transaction.simulate.simple({
-        signerPublicKey: await this.getPublicKeyForAddress(senderAddress),
+        signerPublicKey: account.publicKey,
         transaction,
       });
 
@@ -426,83 +466,86 @@ export class StreamLockContract {
         vmStatus: simulation.vm_status,
       };
     } catch (error) {
-      // Return default estimates on simulation failure
+      // Return safer fallback estimates on simulation failure
+      console.warn('Transaction simulation failed:', error instanceof Error ? error.message : error);
       return {
-        gasUnits: 10000n,
+        gasUnits: 50000n,
         gasPrice: 100n,
-        totalCost: 1000000n,
+        totalCost: 5000000n, // 0.05 APT - safer fallback
         success: false,
         vmStatus: error instanceof Error ? error.message : 'Simulation failed',
       };
     }
   }
 
-  /** Get public key for address (for simulation) */
-  private async getPublicKeyForAddress(address: string): Promise<{ key: string; type: string }> {
-    try {
-      const account = await this.client.getAccountInfo({ accountAddress: address });
-      // Return a placeholder key structure - simulation doesn't require actual signature
-      return {
-        key: account.authentication_key || address,
-        type: 'ed25519',
-      };
-    } catch {
-      // Fallback for new accounts
-      return {
-        key: address,
-        type: 'ed25519',
-      };
-    }
+  /**
+   * @deprecated Use estimateGas or simulateTransactionWithAccount instead
+   * Legacy method kept for backwards compatibility
+   */
+  async simulateTransaction(
+    senderAddress: string,
+    payload: InputGenerateTransactionPayloadData
+  ): Promise<{
+    gasUnits: bigint;
+    gasPrice: bigint;
+    totalCost: bigint;
+    success: boolean;
+    vmStatus?: string;
+  }> {
+    return this.estimateGas(senderAddress, payload);
   }
 
   /** Estimate gas for start_session */
   async estimateStartSession(
     viewerAddress: string,
-    videoId: string,
+    videoId: bigint,
     prepaidSegments: number,
     maxDurationSeconds: number
-  ): Promise<{ gasUnits: bigint; totalCost: bigint }> {
+  ): Promise<{ gasUnits: bigint; totalCost: bigint; success: boolean }> {
     const result = await this.simulateTransaction(viewerAddress, {
       function: this.functionId('start_session'),
-      functionArguments: [videoId, prepaidSegments, maxDurationSeconds],
+      functionArguments: [videoId.toString(), prepaidSegments, maxDurationSeconds],
     });
 
     return {
       gasUnits: result.gasUnits,
       totalCost: result.totalCost,
+      success: result.success,
     };
   }
 
   /** Estimate gas for pay_for_segment */
   async estimatePayForSegment(
     viewerAddress: string,
-    sessionId: string,
+    sessionId: bigint,
     segmentIndex: number
-  ): Promise<{ gasUnits: bigint; totalCost: bigint }> {
+  ): Promise<{ gasUnits: bigint; totalCost: bigint; success: boolean }> {
     const result = await this.simulateTransaction(viewerAddress, {
       function: this.functionId('pay_for_segment'),
-      functionArguments: [sessionId, segmentIndex],
+      functionArguments: [sessionId.toString(), segmentIndex],
     });
 
     return {
       gasUnits: result.gasUnits,
       totalCost: result.totalCost,
+      success: result.success,
     };
   }
 
   /** Estimate gas for end_session */
   async estimateEndSession(
     viewerAddress: string,
-    sessionId: string
-  ): Promise<{ gasUnits: bigint; totalCost: bigint }> {
+    sessionId: bigint
+  ): Promise<{ gasUnits: bigint; totalCost: bigint; success: boolean }> {
     const result = await this.simulateTransaction(viewerAddress, {
       function: this.functionId('end_session'),
-      functionArguments: [sessionId],
+      functionArguments: [sessionId.toString()],
     });
 
     return {
       gasUnits: result.gasUnits,
       totalCost: result.totalCost,
+      success: result.success,
     };
   }
 

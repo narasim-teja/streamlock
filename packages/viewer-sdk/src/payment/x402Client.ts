@@ -17,9 +17,9 @@ export type SignAndSubmitTransactionFunction = (
 
 /** Payment request */
 export interface PaymentRequest {
-  videoId: string;
+  videoId: bigint;
   segmentIndex: number;
-  sessionId: string;
+  sessionId: bigint;
 }
 
 /** Payment result */
@@ -78,7 +78,7 @@ export class X402PaymentClient {
       const signAndSubmit = this.signer as SignAndSubmitTransactionFunction;
       const payload: InputGenerateTransactionPayloadData = {
         function: this.functionId('pay_for_segment'),
-        functionArguments: [request.sessionId, request.segmentIndex],
+        functionArguments: [request.sessionId.toString(), request.segmentIndex],
       };
 
       const pendingTx = await signAndSubmit(payload);
@@ -142,12 +142,12 @@ export class X402PaymentClient {
   }
 
   /** Get segment price for a video */
-  async getSegmentPrice(videoId: string): Promise<bigint> {
+  async getSegmentPrice(videoId: bigint): Promise<bigint> {
     return this.contract.getSegmentPrice(videoId);
   }
 
   /** Check if segment is already paid */
-  async isSegmentPaid(sessionId: string, segmentIndex: number): Promise<boolean> {
+  async isSegmentPaid(sessionId: bigint, segmentIndex: number): Promise<boolean> {
     return this.contract.isSegmentPaid(sessionId, segmentIndex);
   }
 }

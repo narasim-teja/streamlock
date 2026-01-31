@@ -9,7 +9,10 @@ import { StreamLockPlayer } from '../StreamLockPlayer.js';
 
 /** Player component props */
 export interface StreamLockPlayerProps {
-  videoId: string;
+  /** On-chain video ID (bigint) */
+  videoId: bigint;
+  /** Local video ID for storage paths (string from upload result) */
+  localVideoId: string;
   aptosClient: Aptos;
   contractAddress: string;
   keyServerBaseUrl: string;
@@ -26,6 +29,7 @@ export interface StreamLockPlayerProps {
 /** StreamLock Player Component */
 export function StreamLockPlayerComponent({
   videoId,
+  localVideoId,
   aptosClient,
   contractAddress,
   keyServerBaseUrl,
@@ -57,7 +61,7 @@ export function StreamLockPlayerComponent({
     const init = async () => {
       try {
         setLoading(true);
-        await player.initialize(videoId);
+        await player.initialize(videoId, localVideoId);
 
         // Start session
         const sessionInfo = await player.startSession(signer, prepaidSegments);
@@ -68,6 +72,7 @@ export function StreamLockPlayerComponent({
         if (videoRef.current) {
           player.attachToElement(videoRef.current, {
             videoId,
+            localVideoId,
             prepaidSegments,
             autoTopUp,
             onPayment,
@@ -112,7 +117,7 @@ export function StreamLockPlayerComponent({
       />
       {session && (
         <div style={{ padding: '10px', fontSize: '12px' }}>
-          Session: {session.sessionId.slice(0, 8)}... | Balance:{' '}
+          Session: {session.sessionId.toString().slice(0, 8)}... | Balance:{' '}
           {session.prepaidBalance.toString()} octas
         </div>
       )}

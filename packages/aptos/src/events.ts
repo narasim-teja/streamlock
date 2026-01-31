@@ -62,7 +62,7 @@ function matchesEventType(eventType: string, expectedType: string): boolean {
 
 /** Extract VideoRegistered event data */
 export function parseVideoRegisteredEvent(event: ContractEvent): {
-  videoId: string;
+  videoId: bigint;
   creator: string;
   totalSegments: number;
   pricePerSegment: bigint;
@@ -75,8 +75,8 @@ export function parseVideoRegisteredEvent(event: ContractEvent): {
 
   const data = event.data;
 
-  // Validate required fields exist
-  if (!data.video_id || !data.creator) {
+  // Validate required fields exist (check for undefined/null, not falsy to allow 0)
+  if (data.video_id === undefined || data.video_id === null || !data.creator) {
     console.error('Missing required fields in VideoRegisteredEvent:', data);
     return null;
   }
@@ -93,7 +93,7 @@ export function parseVideoRegisteredEvent(event: ContractEvent): {
   }
 
   return {
-    videoId: String(data.video_id),
+    videoId: safeParseBigInt(data.video_id),
     creator: String(data.creator),
     totalSegments: safeParseInt(data.total_segments),
     pricePerSegment: safeParseBigInt(data.price_per_segment),
@@ -104,7 +104,7 @@ export function parseVideoRegisteredEvent(event: ContractEvent): {
 
 /** Extract VideoPriceUpdated event data */
 export function parseVideoPriceUpdatedEvent(event: ContractEvent): {
-  videoId: string;
+  videoId: bigint;
   oldPrice: bigint;
   newPrice: bigint;
   timestamp: number;
@@ -115,7 +115,7 @@ export function parseVideoPriceUpdatedEvent(event: ContractEvent): {
 
   const data = event.data;
   return {
-    videoId: String(safeParseField(data, 'video_id', '')),
+    videoId: safeParseBigInt(data.video_id),
     oldPrice: safeParseBigInt(data.old_price),
     newPrice: safeParseBigInt(data.new_price),
     timestamp: safeParseInt(data.timestamp),
@@ -124,7 +124,7 @@ export function parseVideoPriceUpdatedEvent(event: ContractEvent): {
 
 /** Extract VideoDeactivated event data */
 export function parseVideoDeactivatedEvent(event: ContractEvent): {
-  videoId: string;
+  videoId: bigint;
   timestamp: number;
 } | null {
   if (!matchesEventType(event.type, EVENT_TYPES.VIDEO_DEACTIVATED)) {
@@ -133,15 +133,15 @@ export function parseVideoDeactivatedEvent(event: ContractEvent): {
 
   const data = event.data;
   return {
-    videoId: String(safeParseField(data, 'video_id', '')),
+    videoId: safeParseBigInt(data.video_id),
     timestamp: safeParseInt(data.timestamp),
   };
 }
 
 /** Extract SessionStarted event data */
 export function parseSessionStartedEvent(event: ContractEvent): {
-  sessionId: string;
-  videoId: string;
+  sessionId: bigint;
+  videoId: bigint;
   viewer: string;
   prepaidAmount: bigint;
   timestamp: number;
@@ -152,8 +152,8 @@ export function parseSessionStartedEvent(event: ContractEvent): {
 
   const data = event.data;
   return {
-    sessionId: String(safeParseField(data, 'session_id', '')),
-    videoId: String(safeParseField(data, 'video_id', '')),
+    sessionId: safeParseBigInt(data.session_id),
+    videoId: safeParseBigInt(data.video_id),
     viewer: String(safeParseField(data, 'viewer', '')),
     prepaidAmount: safeParseBigInt(data.prepaid_amount),
     timestamp: safeParseInt(data.timestamp),
@@ -162,8 +162,8 @@ export function parseSessionStartedEvent(event: ContractEvent): {
 
 /** Extract SegmentPaid event data */
 export function parseSegmentPaidEvent(event: ContractEvent): {
-  sessionId: string;
-  videoId: string;
+  sessionId: bigint;
+  videoId: bigint;
   segmentIndex: number;
   amount: bigint;
   timestamp: number;
@@ -174,8 +174,8 @@ export function parseSegmentPaidEvent(event: ContractEvent): {
 
   const data = event.data;
   return {
-    sessionId: String(safeParseField(data, 'session_id', '')),
-    videoId: String(safeParseField(data, 'video_id', '')),
+    sessionId: safeParseBigInt(data.session_id),
+    videoId: safeParseBigInt(data.video_id),
     segmentIndex: safeParseInt(data.segment_index),
     amount: safeParseBigInt(data.amount),
     timestamp: safeParseInt(data.timestamp),
@@ -184,7 +184,7 @@ export function parseSegmentPaidEvent(event: ContractEvent): {
 
 /** Extract SessionToppedUp event data */
 export function parseSessionToppedUpEvent(event: ContractEvent): {
-  sessionId: string;
+  sessionId: bigint;
   additionalAmount: bigint;
   newBalance: bigint;
   timestamp: number;
@@ -195,7 +195,7 @@ export function parseSessionToppedUpEvent(event: ContractEvent): {
 
   const data = event.data;
   return {
-    sessionId: String(safeParseField(data, 'session_id', '')),
+    sessionId: safeParseBigInt(data.session_id),
     additionalAmount: safeParseBigInt(data.additional_amount),
     newBalance: safeParseBigInt(data.new_balance),
     timestamp: safeParseInt(data.timestamp),
@@ -204,7 +204,7 @@ export function parseSessionToppedUpEvent(event: ContractEvent): {
 
 /** Extract SessionEnded event data */
 export function parseSessionEndedEvent(event: ContractEvent): {
-  sessionId: string;
+  sessionId: bigint;
   segmentsWatched: number;
   totalPaid: bigint;
   refunded: bigint;
@@ -216,7 +216,7 @@ export function parseSessionEndedEvent(event: ContractEvent): {
 
   const data = event.data;
   return {
-    sessionId: String(safeParseField(data, 'session_id', '')),
+    sessionId: safeParseBigInt(data.session_id),
     segmentsWatched: safeParseInt(data.segments_watched),
     totalPaid: safeParseBigInt(data.total_paid),
     refunded: safeParseBigInt(data.refunded),

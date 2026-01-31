@@ -13,7 +13,7 @@ import { verifyMerkleProof } from './merkle.js';
 export async function getOnChainCommitment(
   client: Aptos,
   contractAddress: string,
-  videoId: string
+  videoId: bigint
 ): Promise<string | null> {
   const contract = createStreamLockContract(client, {
     address: contractAddress,
@@ -37,7 +37,7 @@ export async function verifyKeyAgainstCommitment(
   proof: MerkleProof,
   client: Aptos,
   contractAddress: string,
-  videoId: string
+  videoId: bigint
 ): Promise<boolean> {
   // First verify the Merkle proof locally
   const proofValid = verifyMerkleProof(key, proof);

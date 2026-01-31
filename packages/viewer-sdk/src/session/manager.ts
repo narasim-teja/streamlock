@@ -7,7 +7,7 @@ import type { StreamLockContract } from '@streamlock/aptos';
 
 /** Video info for session */
 export interface SessionVideoInfo {
-  videoId: string;
+  videoId: bigint;
   totalSegments: number;
   pricePerSegment: bigint;
 }
@@ -44,15 +44,15 @@ export class SessionManager {
   /** Create from serialized data */
   static fromJSON(data: SerializedSessionData): SessionManager {
     const session: SessionInfo = {
-      sessionId: data.session.sessionId,
-      videoId: data.session.videoId,
+      sessionId: BigInt(data.session.sessionId),
+      videoId: BigInt(data.session.videoId),
       prepaidBalance: BigInt(data.session.prepaidBalance),
       segmentsPaid: data.session.segmentsPaid,
       expiresAt: data.session.expiresAt,
     };
 
     const video: SessionVideoInfo = {
-      videoId: data.video.videoId,
+      videoId: BigInt(data.video.videoId),
       totalSegments: data.video.totalSegments,
       pricePerSegment: BigInt(data.video.pricePerSegment),
     };
@@ -68,14 +68,14 @@ export class SessionManager {
   toJSON(): SerializedSessionData {
     return {
       session: {
-        sessionId: this.session.sessionId,
-        videoId: this.session.videoId,
+        sessionId: this.session.sessionId.toString(),
+        videoId: this.session.videoId.toString(),
         prepaidBalance: this.session.prepaidBalance.toString(),
         segmentsPaid: this.session.segmentsPaid,
         expiresAt: this.session.expiresAt,
       },
       video: {
-        videoId: this.video.videoId,
+        videoId: this.video.videoId.toString(),
         totalSegments: this.video.totalSegments,
         pricePerSegment: this.video.pricePerSegment.toString(),
       },
@@ -173,6 +173,9 @@ export class SessionManager {
 
   /** Check if balance is low */
   isLowBalance(threshold: number): boolean {
+    if (this.video.pricePerSegment === 0n) {
+      return false; // Free video, never low on balance
+    }
     const remainingSegments =
       Number(this.getRemainingBalance() / this.video.pricePerSegment);
     return remainingSegments <= threshold;
@@ -180,6 +183,9 @@ export class SessionManager {
 
   /** Get segments remaining */
   getSegmentsRemaining(): number {
+    if (this.video.pricePerSegment === 0n) {
+      return this.video.totalSegments; // Free video, all segments available
+    }
     return Number(this.getRemainingBalance() / this.video.pricePerSegment);
   }
 

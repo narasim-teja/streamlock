@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useWallet } from '@aptos-labs/wallet-adapter-react';
-import { Aptos, Network } from '@aptos-labs/ts-sdk';
+import { Aptos, AptosConfig, Network } from '@aptos-labs/ts-sdk';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Copy, ExternalLink, LogOut, ChevronDown, Wallet } from 'lucide-react';
 import { truncateAddress, octasToApt } from '@streamlock/common';
@@ -25,7 +25,8 @@ export function ConnectButton() {
       try {
         const aptosNetwork =
           (process.env.NEXT_PUBLIC_APTOS_NETWORK as Network) || Network.TESTNET;
-        const client = new Aptos({ network: aptosNetwork });
+        const config = new AptosConfig({ network: aptosNetwork });
+        const client = new Aptos(config);
         const resources = await client.getAccountResources({
           accountAddress: account.address,
         });

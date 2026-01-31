@@ -36,6 +36,17 @@ export interface StreamLockCreatorConfig {
   contractAddress: string;
   storageProvider: StorageProvider;
   keyServerBaseUrl: string;
+  /**
+   * Optional external master secret store.
+   * If not provided, secrets are stored in memory (NOT recommended for production).
+   * Implement MasterSecretStore interface for persistent/secure storage.
+   */
+  masterSecretStore?: MasterSecretStore;
+  /**
+   * Optional external Merkle tree store.
+   * If not provided, trees are stored in memory (NOT recommended for production).
+   */
+  merkleTreeStore?: MerkleTreeStore;
 }
 
 /** Master secret store interface */
@@ -60,13 +71,41 @@ export interface CreatorMetadata {
   avatar?: string;
 }
 
+/** In-memory master secret store (NOT for production use) */
+class InMemoryMasterSecretStore implements MasterSecretStore {
+  private secrets = new Map<string, Buffer>();
+  async set(videoId: string, secret: Buffer): Promise<void> {
+    this.secrets.set(videoId, secret);
+  }
+  async get(videoId: string): Promise<Buffer | null> {
+    return this.secrets.get(videoId) ?? null;
+  }
+  async delete(videoId: string): Promise<void> {
+    this.secrets.delete(videoId);
+  }
+}
+
+/** In-memory Merkle tree store (NOT for production use) */
+class InMemoryMerkleTreeStore implements MerkleTreeStore {
+  private trees = new Map<string, MerkleTree>();
+  async set(videoId: string, tree: MerkleTree): Promise<void> {
+    this.trees.set(videoId, tree);
+  }
+  async get(videoId: string): Promise<MerkleTree | null> {
+    return this.trees.get(videoId) ?? null;
+  }
+  async delete(videoId: string): Promise<void> {
+    this.trees.delete(videoId);
+  }
+}
+
 /** StreamLock Creator SDK */
 export class StreamLockCreator {
   private contract: StreamLockContract;
   private storage: StorageProvider;
   private keyServerBaseUrl: string;
-  private masterSecrets: Map<string, Buffer> = new Map();
-  private merkleTrees: Map<string, MerkleTree> = new Map();
+  private secretStore: MasterSecretStore;
+  private treeStore: MerkleTreeStore;
 
   constructor(config: StreamLockCreatorConfig) {
     this.contract = createStreamLockContract(config.aptosClient, {
@@ -75,6 +114,16 @@ export class StreamLockCreator {
     });
     this.storage = config.storageProvider;
     this.keyServerBaseUrl = config.keyServerBaseUrl;
+
+    // Use provided stores or fall back to in-memory (with warning)
+    if (!config.masterSecretStore) {
+      console.warn(
+        '[StreamLockCreator] Using in-memory secret store. ' +
+          'For production, implement MasterSecretStore interface for persistent/secure storage.'
+      );
+    }
+    this.secretStore = config.masterSecretStore ?? new InMemoryMasterSecretStore();
+    this.treeStore = config.merkleTreeStore ?? new InMemoryMerkleTreeStore();
   }
 
   /** Register as a creator */
@@ -137,7 +186,8 @@ export class StreamLockCreator {
     const { encryptedSegments, ivs } = await encryptVideoSegments(
       segments,
       keys,
-      videoId
+      videoId,
+      masterSecret
     );
     onProgress?.('encrypting', 50);
 
@@ -146,9 +196,9 @@ export class StreamLockCreator {
     const merkleRoot = getMerkleRoot(merkleTree);
     onProgress?.('encrypting', 100);
 
-    // Store master secret and tree locally
-    this.masterSecrets.set(videoId, masterSecret);
-    this.merkleTrees.set(videoId, merkleTree);
+    // Store master secret and tree
+    await this.secretStore.set(videoId, masterSecret);
+    await this.treeStore.set(videoId, merkleTree);
 
     // Stage 3: Generate HLS package
     onProgress?.('packaging', 0);
@@ -195,12 +245,17 @@ export class StreamLockCreator {
     // Upload thumbnail if provided
     let thumbnailUri = '';
     if (options.thumbnail) {
-      const thumbnailData =
-        typeof options.thumbnail === 'string'
-          ? await Bun.file(options.thumbnail).arrayBuffer().then(Buffer.from)
-          : Buffer.isBuffer(options.thumbnail)
-            ? options.thumbnail
-            : await options.thumbnail.arrayBuffer().then(Buffer.from);
+      let thumbnailData: Buffer;
+      if (typeof options.thumbnail === 'string') {
+        // File path - use fs/promises for cross-runtime compatibility
+        const { readFile } = await import('fs/promises');
+        thumbnailData = await readFile(options.thumbnail);
+      } else if (Buffer.isBuffer(options.thumbnail)) {
+        thumbnailData = options.thumbnail;
+      } else {
+        // File object
+        thumbnailData = Buffer.from(await options.thumbnail.arrayBuffer());
+      }
 
       thumbnailUri = await this.storage.upload(
         `${videoId}/thumbnail.jpg`,
@@ -222,12 +277,14 @@ export class StreamLockCreator {
     });
     onProgress?.('registering', 100);
 
-    // Extract video ID from event
+    // Extract video ID from event (on-chain ID is bigint, local ID is string for storage)
     const videoEvent = findEvent(result.events, EVENT_TYPES.VIDEO_REGISTERED);
     const eventData = videoEvent ? parseVideoRegisteredEvent(videoEvent) : null;
+    const onChainVideoId = eventData?.videoId ?? 0n;
 
     return {
-      videoId: eventData?.videoId ?? videoId,
+      videoId: onChainVideoId,
+      localVideoId: videoId, // String ID used for storage paths
       contentUri,
       thumbnailUri,
       totalSegments: segments.length,
@@ -244,7 +301,7 @@ export class StreamLockCreator {
   }
 
   /** Deactivate a video */
-  async deactivateVideo(signer: Account, videoId: string): Promise<string> {
+  async deactivateVideo(signer: Account, videoId: bigint): Promise<string> {
     const result = await this.contract.deactivateVideo(signer, videoId);
     return result.hash;
   }
@@ -252,7 +309,7 @@ export class StreamLockCreator {
   /** Update video price */
   async updatePrice(
     signer: Account,
-    videoId: string,
+    videoId: bigint,
     newPriceApt: number
   ): Promise<string> {
     const priceOctas = aptToOctas(newPriceApt);
@@ -281,23 +338,29 @@ export class StreamLockCreator {
   /** Get key handler for API routes */
   getKeyHandler(): KeyHandler {
     return createKeyHandler({
-      getMasterSecret: async (videoId) => this.masterSecrets.get(videoId) ?? null,
-      getMerkleTree: async (videoId) => this.merkleTrees.get(videoId) ?? null,
+      getMasterSecret: async (videoId) => this.secretStore.get(videoId),
+      getMerkleTree: async (videoId) => this.treeStore.get(videoId),
     });
   }
 
   /** Get Merkle tree for a video */
-  getMerkleTree(videoId: string): MerkleTree | null {
-    return this.merkleTrees.get(videoId) ?? null;
+  async getMerkleTree(videoId: string): Promise<MerkleTree | null> {
+    return this.treeStore.get(videoId);
   }
 
   /** Set master secret (for loading from database) */
-  setMasterSecret(videoId: string, secret: Buffer): void {
-    this.masterSecrets.set(videoId, secret);
+  async setMasterSecret(videoId: string, secret: Buffer): Promise<void> {
+    await this.secretStore.set(videoId, secret);
   }
 
   /** Set Merkle tree (for loading from database) */
-  setMerkleTree(videoId: string, tree: MerkleTree): void {
-    this.merkleTrees.set(videoId, tree);
+  async setMerkleTree(videoId: string, tree: MerkleTree): Promise<void> {
+    await this.treeStore.set(videoId, tree);
+  }
+
+  /** Delete video secrets and tree (for cleanup) */
+  async deleteVideoSecrets(videoId: string): Promise<void> {
+    await this.secretStore.delete(videoId);
+    await this.treeStore.delete(videoId);
   }
 }

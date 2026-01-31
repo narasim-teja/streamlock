@@ -8,3 +8,6 @@ export * from './session/index.js';
 export * from './playback/index.js';
 export * from './payment/index.js';
 export * from './verification/index.js';
+
+// React components and hooks (optional peer dependency)
+export * from './react/index.js';

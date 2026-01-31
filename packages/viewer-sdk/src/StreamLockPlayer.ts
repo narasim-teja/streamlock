@@ -7,7 +7,6 @@ import type {
   Aptos,
   Account,
   InputGenerateTransactionPayloadData,
-  PendingTransactionResponse,
 } from '@aptos-labs/ts-sdk';
 import type {
   SessionInfo,
@@ -25,6 +24,7 @@ import {
   X402PaymentClient,
   type SignAndSubmitTransactionFunction,
 } from './payment/x402Client.js';
+import { X402KeyLoader } from './playback/hlsLoader.js';
 
 /** Wallet adapter sign and submit function type (re-exported for convenience) */
 export type { SignAndSubmitTransactionFunction };
@@ -38,7 +38,8 @@ export interface StreamLockPlayerConfig {
 
 /** Play options */
 export interface PlayOptions {
-  videoId: string;
+  videoId: bigint;
+  localVideoId: string; // String ID for storage/API paths
   prepaidSegments?: number;
   autoTopUp?: boolean;
   topUpThreshold?: number;
@@ -51,7 +52,8 @@ export interface PlayOptions {
 
 /** Video info returned from initialize */
 export interface VideoInfo {
-  videoId: string;
+  videoId: bigint;
+  localVideoId: string; // String ID for storage/API paths
   contentUri: string;
   thumbnailUri: string;
   durationSeconds: number;
@@ -80,6 +82,7 @@ export class StreamLockPlayer {
   private options: PlayOptions | null = null;
   private signer: PlayerSigner | null = null;
   private paymentClient: X402PaymentClient | null = null;
+  private keyLoader: X402KeyLoader | null = null;
 
   constructor(config: StreamLockPlayerConfig) {
     this.config = config;
@@ -102,8 +105,12 @@ export class StreamLockPlayer {
       : this.signer.address;
   }
 
-  /** Initialize player with video */
-  async initialize(videoId: string): Promise<VideoInfo> {
+  /**
+   * Initialize player with video
+   * @param videoId - On-chain video ID (bigint)
+   * @param localVideoId - String ID for storage paths (from upload result)
+   */
+  async initialize(videoId: bigint, localVideoId: string): Promise<VideoInfo> {
     const video = await this.contract.getVideo(videoId);
 
     if (!video) {
@@ -112,6 +119,7 @@ export class StreamLockPlayer {
 
     this.currentVideo = {
       videoId: video.videoId,
+      localVideoId,
       contentUri: video.contentUri,
       thumbnailUri: video.thumbnailUri,
       durationSeconds: video.durationSeconds,
@@ -208,8 +216,8 @@ export class StreamLockPlayer {
     };
 
     const sessionInfo: SessionInfo = {
-      sessionId: sessionData.session_id,
-      videoId: sessionData.video_id,
+      sessionId: BigInt(sessionData.session_id),
+      videoId: BigInt(sessionData.video_id),
       prepaidBalance: BigInt(sessionData.prepaid_amount),
       segmentsPaid: 0,
       expiresAt: Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SECONDS,
@@ -227,6 +235,32 @@ export class StreamLockPlayer {
         this.signer.type === 'wallet'
           ? this.signer.signAndSubmit
           : this.signer.account,
+    });
+
+    // Initialize key loader for x402 payments
+    this.keyLoader = new X402KeyLoader({
+      keyServerBaseUrl: this.config.keyServerBaseUrl,
+      sessionId: sessionInfo.sessionId,
+      videoId: sessionInfo.videoId,
+      localVideoId: this.currentVideo.localVideoId,
+      aptosClient: this.config.aptosClient,
+      contractAddress: this.config.contractAddress,
+      accountAddress: this.getSignerAddress(),
+      signer:
+        this.signer.type === 'wallet'
+          ? this.signer.signAndSubmit
+          : this.signer.account,
+      onPayment: (segmentIndex, txHash, amount) => {
+        this.options?.onPayment?.({
+          segmentIndex,
+          amount,
+          txHash,
+          timestamp: Date.now(),
+        });
+      },
+      onError: (error) => {
+        this.options?.onError?.(error);
+      },
     });
 
     // Notify callback
@@ -247,6 +281,7 @@ export class StreamLockPlayer {
     this.videoElement = videoElement;
     this.options = {
       videoId: this.currentVideo.videoId,
+      localVideoId: this.currentVideo.localVideoId,
       prepaidSegments: DEFAULT_PREPAID_SEGMENTS,
       autoTopUp: true,
       topUpThreshold: DEFAULT_TOPUP_THRESHOLD,
@@ -258,10 +293,13 @@ export class StreamLockPlayer {
       throw new Error('HLS is not supported in this browser');
     }
 
-    // Create HLS instance with custom key loader
+    // Create HLS instance
+    // Note: HLS.js doesn't directly support custom key loaders in a simple way.
+    // The X402KeyLoader is used separately, and we handle key fetching through
+    // segment-level events and manual key injection.
     this.hls = new Hls({
-      // Custom loader for x402 key fetching would go here
-      // For now, use default loader
+      enableWorker: true,
+      lowLatencyMode: false,
     });
 
     this.hls.loadSource(this.currentVideo.contentUri);
@@ -269,6 +307,18 @@ export class StreamLockPlayer {
 
     this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
       // Ready to play
+      console.log('StreamLock: Manifest parsed, ready to play');
+    });
+
+    // Handle segment loading to trigger x402 payment flow
+    this.hls.on(Hls.Events.FRAG_LOADING, (_event, data) => {
+      if (this.keyLoader && data.frag.sn !== 'initSegment') {
+        const segmentIndex = typeof data.frag.sn === 'number' ? data.frag.sn : 0;
+        // Pre-fetch key for this segment (async, don't block)
+        this.keyLoader.loadKey(segmentIndex).catch((err) => {
+          console.warn('Key prefetch failed for segment', segmentIndex, err);
+        });
+      }
     });
 
     this.hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -332,7 +382,7 @@ export class StreamLockPlayer {
       // Use wallet adapter
       const payload: InputGenerateTransactionPayloadData = {
         function: this.functionId('top_up_session'),
-        functionArguments: [sessionId, additionalSegments],
+        functionArguments: [sessionId.toString(), additionalSegments],
       };
 
       const pendingTx = await this.signer.signAndSubmit(payload);
@@ -365,7 +415,7 @@ export class StreamLockPlayer {
       // Use wallet adapter
       const payload: InputGenerateTransactionPayloadData = {
         function: this.functionId('end_session'),
-        functionArguments: [sessionId],
+        functionArguments: [sessionId.toString()],
       };
 
       const pendingTx = await this.signer.signAndSubmit(payload);
@@ -410,6 +460,8 @@ export class StreamLockPlayer {
     // Cleanup
     this.sessionManager = null;
     this.paymentClient = null;
+    this.keyLoader?.clearCache();
+    this.keyLoader = null;
 
     return summary;
   }
@@ -417,6 +469,11 @@ export class StreamLockPlayer {
   /** Get payment client */
   getPaymentClient(): X402PaymentClient | null {
     return this.paymentClient;
+  }
+
+  /** Get key loader */
+  getKeyLoader(): X402KeyLoader | null {
+    return this.keyLoader;
   }
 
   /** Get video element */

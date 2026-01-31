@@ -29,8 +29,8 @@ export interface UseWalletSessionConfig {
   aptosClient: Aptos;
   /** Contract address */
   contractAddress: string;
-  /** Video ID */
-  videoId: string;
+  /** Video ID (bigint from on-chain) */
+  videoId: bigint;
   /** Wallet account address */
   accountAddress: string | undefined;
   /** Wallet sign and submit function */
@@ -96,7 +96,7 @@ export function useWalletSession(
     videoId,
     accountAddress,
     signAndSubmitTransaction,
-    isConnected,
+    isConnected: _isConnected, // Used implicitly via accountAddress/signAndSubmit
     storage = new LocalStorageSessionStorage(),
     lowBalanceThreshold = DEFAULT_TOPUP_THRESHOLD,
     syncInterval = 30000,
@@ -224,12 +224,16 @@ export function useWalletSession(
   useEffect(() => {
     if (!videoId || !contractRef.current) return;
 
-    contractRef.current.getSegmentPrice(videoId).then(setPricePerSegment).catch(() => {});
+    contractRef.current.getSegmentPrice(videoId).then(setPricePerSegment).catch((err) => {
+      console.warn('Failed to fetch segment price:', err);
+      // Keep pricePerSegment at 0n - UI should handle this gracefully
+    });
   }, [videoId]);
 
+  // Safe division - avoid dividing by zero if price not loaded yet
   const remainingSegments =
     session && pricePerSegment > 0n
-      ? Number(session.prepaidBalance / pricePerSegment) - session.segmentsPaid
+      ? Math.max(0, Number(session.prepaidBalance / pricePerSegment) - session.segmentsPaid)
       : 0;
 
   const isLowBalance = remainingSegments <= lowBalanceThreshold;
@@ -274,8 +278,8 @@ export function useWalletSession(
         };
 
         const newSession: SessionInfo = {
-          sessionId: sessionData.session_id,
-          videoId: sessionData.video_id,
+          sessionId: BigInt(sessionData.session_id),
+          videoId: BigInt(sessionData.video_id),
           prepaidBalance: BigInt(sessionData.prepaid_amount),
           segmentsPaid: 0,
           expiresAt: Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SECONDS,

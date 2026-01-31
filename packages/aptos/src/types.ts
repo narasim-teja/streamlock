@@ -50,26 +50,26 @@ export interface RegisterVideoParams {
 
 /** Start session parameters */
 export interface StartSessionParams {
-  videoId: string;
+  videoId: bigint;
   prepaidSegments: number;
   maxDurationSeconds: number;
 }
 
 /** Pay for segment parameters */
 export interface PayForSegmentParams {
-  sessionId: string;
+  sessionId: bigint;
   segmentIndex: number;
 }
 
 /** Top up session parameters */
 export interface TopUpSessionParams {
-  sessionId: string;
+  sessionId: bigint;
   additionalSegments: number;
 }
 
 /** On-chain video data */
 export interface OnChainVideo {
-  videoId: string;
+  videoId: bigint;
   creator: string;
   contentUri: string;
   thumbnailUri: string;
@@ -85,8 +85,8 @@ export interface OnChainVideo {
 
 /** On-chain session data */
 export interface OnChainSession {
-  sessionId: string;
-  videoId: string;
+  sessionId: bigint;
+  videoId: bigint;
   viewer: string;
   creator: string;
   segmentsPaid: number;
