@@ -13,6 +13,10 @@ import { VideoProcessingError } from '@streamlock/common';
 export interface SegmenterOptions {
   segmentDuration: number;
   quality: '480p' | '720p' | '1080p';
+  /** Optional path to FFmpeg binary (for serverless environments like Vercel) */
+  ffmpegPath?: string;
+  /** Timeout in milliseconds (default: 5 minutes, use lower for serverless) */
+  timeout?: number;
 }
 
 /** Quality presets */
@@ -29,8 +33,18 @@ export async function segmentVideo(
   input: File | Buffer | string,
   options: SegmenterOptions
 ): Promise<Segment[]> {
-  const { segmentDuration, quality } = options;
+  const {
+    segmentDuration,
+    quality,
+    ffmpegPath,
+    timeout = 5 * 60 * 1000, // Default: 5 minutes
+  } = options;
   const preset = QUALITY_PRESETS[quality];
+
+  // Set custom FFmpeg path if provided (for serverless environments)
+  if (ffmpegPath) {
+    ffmpeg.setFfmpegPath(ffmpegPath);
+  }
 
   // Create temp directory for processing
   const tempDir = join(tmpdir(), `streamlock-${Date.now()}`);
@@ -57,7 +71,7 @@ export async function segmentVideo(
     const segmentPattern = join(tempDir, 'segment_%03d.ts');
 
     // Run FFmpeg segmentation with timeout
-    const FFMPEG_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+    const FFMPEG_TIMEOUT_MS = timeout;
     await new Promise<void>((resolve, reject) => {
       let timedOut = false;
       const command = ffmpeg(inputPath)
@@ -88,7 +102,7 @@ export async function segmentVideo(
       const timeout = setTimeout(() => {
         timedOut = true;
         command.kill('SIGKILL');
-        reject(new VideoProcessingError('FFmpeg processing timed out after 5 minutes'));
+        reject(new VideoProcessingError(`FFmpeg processing timed out after ${FFMPEG_TIMEOUT_MS / 1000} seconds`));
       }, FFMPEG_TIMEOUT_MS);
 
       command.on('end', () => clearTimeout(timeout));

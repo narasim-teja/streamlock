@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import { useWallet } from '@aptos-labs/wallet-adapter-react';
 import Link from 'next/link';
+import Hls from 'hls.js';
 import { ConnectButton } from '@/components/wallet/ConnectButton';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -16,7 +17,6 @@ import { formatApt, truncateAddress } from '@streamlock/common';
 import { config } from '@/lib/config';
 import {
   Play,
-  Pause,
   Wallet,
   Plus,
   X,
@@ -25,6 +25,8 @@ import {
   Loader2,
   AlertCircle,
   User,
+  Lock,
+  Unlock,
 } from 'lucide-react';
 
 interface VideoInfo {
@@ -53,6 +55,9 @@ interface SessionState {
   isActive: boolean;
 }
 
+// Cache for decryption keys (to avoid re-paying for same segment)
+const keyCache = new Map<string, ArrayBuffer>();
+
 function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
@@ -76,9 +81,12 @@ export default function WatchPage() {
 
   // Player state
   const videoRef = useRef<HTMLVideoElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [currentKeySegment, setCurrentKeySegment] = useState<number | null>(null);
+  const [isLoadingKey, setIsLoadingKey] = useState(false);
 
   // Fetch video metadata
   useEffect(() => {
@@ -98,6 +106,111 @@ export default function WatchPage() {
 
     fetchVideo();
   }, [videoId]);
+
+  // Initialize HLS.js player when session starts
+  useEffect(() => {
+    if (!session || !video || !videoRef.current) return;
+
+    const videoEl = videoRef.current;
+
+    // Clean up previous instance
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+    }
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        debug: false,
+        enableWorker: true,
+        // Add X-Payment header to key requests
+        xhrSetup: (xhr, url) => {
+          // Check if this is a key request
+          if (url.includes('/key/')) {
+            xhr.setRequestHeader('X-Payment', JSON.stringify({
+              txHash: `demo-tx-${Date.now()}`,
+              network: 'aptos-testnet',
+              sessionId: session.sessionId,
+            }));
+          }
+        },
+      });
+
+      // Track key loading for UI feedback
+      hls.on(Hls.Events.KEY_LOADING, (event, data) => {
+        const segmentMatch = data.frag?.decryptdata?.uri?.match(/\/key\/(\d+)/);
+        const segmentIndex = segmentMatch ? parseInt(segmentMatch[1]) : 0;
+        console.log(`[HLS] Loading key for segment ${segmentIndex}`);
+        setCurrentKeySegment(segmentIndex);
+        setIsLoadingKey(true);
+      });
+
+      hls.on(Hls.Events.KEY_LOADED, (event, data) => {
+        const segmentMatch = data.frag?.decryptdata?.uri?.match(/\/key\/(\d+)/);
+        const segmentIndex = segmentMatch ? parseInt(segmentMatch[1]) : 0;
+        console.log(`[HLS] Key loaded for segment ${segmentIndex}`);
+        setIsLoadingKey(false);
+        setCurrentKeySegment(null);
+
+        // Record the "payment" for this segment
+        setPayments(prev => {
+          // Avoid duplicates
+          if (prev.some(p => p.segmentIndex === segmentIndex)) {
+            return prev;
+          }
+          return [...prev, {
+            segmentIndex,
+            amount: BigInt(video.pricePerSegment),
+            timestamp: Date.now(),
+          }];
+        });
+      });
+
+      hls.loadSource(video.contentUri);
+      hls.attachMedia(videoEl);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        console.log('[HLS] Manifest parsed, ready to play');
+        videoEl.play().catch(console.error);
+      });
+
+      hls.on(Hls.Events.ERROR, (event, data) => {
+        console.error('[HLS] Error:', data);
+        setIsLoadingKey(false);
+        if (data.fatal) {
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              console.log('[HLS] Network error, trying to recover...');
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              console.log('[HLS] Media error, trying to recover...');
+              hls.recoverMediaError();
+              break;
+            default:
+              console.error('[HLS] Fatal error, cannot recover');
+              hls.destroy();
+              break;
+          }
+        }
+      });
+
+      hlsRef.current = hls;
+    } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native HLS support (Safari) - won't work with custom key loading
+      // For Safari, we'd need a different approach
+      videoEl.src = video.contentUri;
+      videoEl.addEventListener('loadedmetadata', () => {
+        videoEl.play().catch(console.error);
+      });
+    }
+
+    return () => {
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+    };
+  }, [session, video]);
 
   // Video element event handlers
   useEffect(() => {
@@ -130,22 +243,17 @@ export default function WatchPage() {
     setError(null);
 
     try {
-      // For MVP/demo: create a local session
-      // In production: use viewer-sdk's useStreamLockPlayer hook
-      // which calls start_session on-chain
-
       const prepaidSegments = 20;
       const prepaidAmount = BigInt(video.pricePerSegment) * BigInt(prepaidSegments);
 
       // If video has on-chain ID, call the contract
       if (video.onChainVideoId) {
-        // Build transaction payload
         const payload = {
           function: `${config.contractAddress}::protocol::start_session` as `${string}::${string}::${string}`,
           functionArguments: [
-            video.onChainVideoId, // video_id
-            prepaidSegments.toString(), // prepaid_segments
-            '7200', // max_duration_seconds (2 hours)
+            video.onChainVideoId,
+            prepaidSegments.toString(),
+            '7200',
           ],
         };
 
@@ -160,11 +268,6 @@ export default function WatchPage() {
         segmentsPaid: 0,
         isActive: true,
       });
-
-      // Start playing
-      if (videoRef.current) {
-        videoRef.current.play().catch(console.error);
-      }
     } catch (err) {
       console.error('Failed to start session:', err);
       setError('Failed to start session. Please try again.');
@@ -182,8 +285,6 @@ export default function WatchPage() {
       const additionalSegments = 10;
       const additionalAmount = BigInt(video.pricePerSegment) * BigInt(additionalSegments);
 
-      // If on-chain session exists, call top_up_session
-      // For demo, just update local state
       setSession((prev) =>
         prev
           ? {
@@ -206,10 +307,13 @@ export default function WatchPage() {
 
     setSessionLoading(true);
     try {
-      // If on-chain session exists, call end_session
-      // For demo, just clear local state
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
       setSession(null);
       setPayments([]);
+      keyCache.clear();
       if (videoRef.current) {
         videoRef.current.pause();
         videoRef.current.currentTime = 0;
@@ -222,9 +326,7 @@ export default function WatchPage() {
   }, [session]);
 
   // Calculate current segment based on time
-  const currentSegment = video
-    ? Math.floor(currentTime / 5) // 5 seconds per segment
-    : 0;
+  const currentSegment = video ? Math.floor(currentTime / 5) : 0;
 
   // Calculate remaining segments
   const remainingSegments = session && video
@@ -340,16 +442,22 @@ export default function WatchPage() {
                   </div>
                 </div>
               ) : (
-                <video
-                  ref={videoRef}
-                  className="w-full h-full"
-                  controls
-                  playsInline
-                  poster={video?.thumbnailUri || undefined}
-                >
-                  <source src={video?.contentUri} type="application/vnd.apple.mpegurl" />
-                  Your browser does not support HLS video.
-                </video>
+                <>
+                  <video
+                    ref={videoRef}
+                    className="w-full h-full"
+                    controls
+                    playsInline
+                    poster={video?.thumbnailUri || undefined}
+                  />
+                  {/* Key loading indicator */}
+                  {isLoadingKey && (
+                    <div className="absolute top-4 right-4 bg-black/70 px-3 py-2 rounded-lg flex items-center gap-2 text-white text-sm">
+                      <Lock className="h-4 w-4 animate-pulse" />
+                      Unlocking segment {currentKeySegment !== null ? currentKeySegment + 1 : ''}...
+                    </div>
+                  )}
+                </>
               )}
             </div>
 
@@ -469,24 +577,30 @@ export default function WatchPage() {
             {session && (
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-lg">Payment Feed</CardTitle>
-                  <CardDescription>Real-time payments as you watch</CardDescription>
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Unlock className="h-4 w-4" />
+                    Decrypted Segments
+                  </CardTitle>
+                  <CardDescription>Keys fetched as you watch</CardDescription>
                 </CardHeader>
                 <CardContent>
                   {payments.length === 0 ? (
                     <p className="text-sm text-muted-foreground text-center py-4">
-                      Payments will appear here as you watch
+                      Segment keys will appear here as you watch
                     </p>
                   ) : (
                     <ScrollArea className="h-48">
                       <div className="space-y-2">
-                        {payments.map((payment, i) => (
+                        {payments.slice().reverse().map((payment, i) => (
                           <div
                             key={i}
                             className="flex justify-between text-sm p-2 bg-muted/50 rounded"
                           >
-                            <span>Segment {payment.segmentIndex + 1}</span>
-                            <span className="font-mono">
+                            <span className="flex items-center gap-2">
+                              <Unlock className="h-3 w-3 text-green-500" />
+                              Segment {payment.segmentIndex + 1}
+                            </span>
+                            <span className="font-mono text-muted-foreground">
                               {formatApt(payment.amount)} APT
                             </span>
                           </div>
@@ -529,4 +643,91 @@ export default function WatchPage() {
       </div>
     </main>
   );
+}
+
+/**
+ * Custom key loader that handles x402 payment flow
+ * For demo purposes, this fetches keys without actual payment verification
+ */
+async function loadKeyWithPayment(
+  context: any,
+  config: any,
+  callbacks: any,
+  video: VideoInfo,
+  session: SessionState,
+  onPayment: (segment: number, amount: bigint) => void,
+  setCurrentKeySegment: (segment: number | null) => void,
+  setIsLoadingKey: (loading: boolean) => void
+) {
+  const keyUrl = context.url;
+
+  // Extract segment index from URL (format: /api/videos/{videoId}/key/{segment})
+  const segmentMatch = keyUrl.match(/\/key\/(\d+)/);
+  const segmentIndex = segmentMatch ? parseInt(segmentMatch[1]) : 0;
+
+  // Check cache first
+  const cacheKey = `${video.videoId}-${segmentIndex}`;
+  if (keyCache.has(cacheKey)) {
+    console.log(`[KeyLoader] Using cached key for segment ${segmentIndex}`);
+    const cachedKey = keyCache.get(cacheKey)!;
+    callbacks.onSuccess(
+      { data: cachedKey },
+      { url: keyUrl },
+      context
+    );
+    return;
+  }
+
+  setCurrentKeySegment(segmentIndex);
+  setIsLoadingKey(true);
+
+  try {
+    console.log(`[KeyLoader] Fetching key for segment ${segmentIndex}`);
+
+    // For demo: skip 402 flow and just pass a mock payment header
+    // In production: handle 402 response, pay on-chain, then retry
+    const response = await fetch(keyUrl, {
+      headers: {
+        'X-Payment': JSON.stringify({
+          txHash: `demo-tx-${Date.now()}`,
+          network: 'aptos-testnet',
+          sessionId: session.sessionId,
+        }),
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Key fetch failed: ${response.status}`);
+    }
+
+    const keyData = await response.json();
+
+    // Convert base64 key to ArrayBuffer for HLS.js
+    const keyBytes = Uint8Array.from(atob(keyData.key), c => c.charCodeAt(0));
+    const keyBuffer = keyBytes.buffer;
+
+    // Cache the key
+    keyCache.set(cacheKey, keyBuffer);
+
+    // Record payment
+    onPayment(segmentIndex, BigInt(video.pricePerSegment));
+
+    console.log(`[KeyLoader] Key loaded for segment ${segmentIndex}`);
+
+    callbacks.onSuccess(
+      { data: keyBuffer },
+      { url: keyUrl },
+      context
+    );
+  } catch (error) {
+    console.error(`[KeyLoader] Error loading key for segment ${segmentIndex}:`, error);
+    callbacks.onError(
+      { code: 2, text: 'Key loading failed' },
+      context,
+      null
+    );
+  } finally {
+    setIsLoadingKey(false);
+    setCurrentKeySegment(null);
+  }
 }

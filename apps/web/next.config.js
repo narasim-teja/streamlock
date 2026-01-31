@@ -8,7 +8,7 @@ const nextConfig = {
     '@streamlock/viewer-sdk',
   ],
   experimental: {
-    serverComponentsExternalPackages: ['better-sqlite3', 'fluent-ffmpeg'],
+    serverComponentsExternalPackages: ['better-sqlite3', 'fluent-ffmpeg', 'ffmpeg-static'],
   },
   webpack: (config) => {
     config.resolve.fallback = {

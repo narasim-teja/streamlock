@@ -1,24 +1,33 @@
 /**
  * POST /api/upload - Video upload endpoint
  *
- * Handles video upload, stores metadata in database, and returns
- * the transaction payload for on-chain registration.
+ * Handles video upload with full processing pipeline:
+ * 1. FFmpeg segmentation
+ * 2. AES-128-CBC encryption per segment
+ * 3. HLS playlist generation with EXT-X-KEY entries
+ * 4. Upload to Supabase storage
+ * 5. Store metadata in database
+ * 6. Return transaction payload for on-chain registration
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db, schema } from '@/lib/db';
 import { getStorageProvider } from '@/lib/storage';
-import {
-  generateMasterSecret,
-  deriveAllSegmentKeys,
-  buildMerkleTree,
-  getMerkleRoot,
-  serializeMerkleTree,
-} from '@streamlock/crypto';
+import { serializeMerkleTree } from '@streamlock/crypto';
 import { aptToOctas } from '@streamlock/common';
 import { getContractAddress } from '@/lib/aptos';
+import { processVideo } from '@/lib/video-processor';
+import { uploadHLSPackage, uploadThumbnail } from '@/lib/hls-upload';
+import {
+  VideoProcessingError,
+  VideoTooLongError,
+  VideoTooLargeError,
+  UnsupportedFormatError,
+} from '@/lib/video-constraints';
 
 export async function POST(request: NextRequest) {
+  const videoId = crypto.randomUUID().replace(/-/g, '');
+
   try {
     const formData = await request.formData();
 
@@ -38,51 +47,38 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Generate video ID
-    const videoId = crypto.randomUUID().replace(/-/g, '');
+    console.log(`[Upload] Starting video processing for: ${title} (${videoId})`);
 
-    // For demo/MVP, simulate video processing
-    // In production, use the creator-sdk to segment, encrypt, and package as HLS
-    // The full pipeline would be:
-    // 1. segmentVideo() - split into 5-second segments
-    // 2. encryptVideoSegments() - encrypt each segment
-    // 3. generateHLSPackage() - create m3u8 playlists
-    const totalSegments = 20; // Simulated - would come from actual video duration
-    const durationSeconds = totalSegments * 5;
+    // Get the key server base URL (uses same origin as the API)
+    const keyServerBaseUrl = process.env.NEXT_PUBLIC_KEY_SERVER_URL || '/api';
 
-    // Generate cryptographic material
-    const masterSecret = generateMasterSecret();
-    const keys = deriveAllSegmentKeys(masterSecret, videoId, totalSegments);
-    const merkleTree = buildMerkleTree(keys);
-    const merkleRoot = getMerkleRoot(merkleTree);
+    // 1. Process video (segment, encrypt, package)
+    const result = await processVideo(videoFile, videoId, {
+      segmentDuration: 5,
+      quality: '720p',
+      keyServerBaseUrl,
+    });
 
-    // Store video and thumbnail
-    const storage = getStorageProvider();
-    const videoBuffer = Buffer.from(await videoFile.arrayBuffer());
-
-    // Upload video content
-    const contentUri = await storage.upload(
-      `${videoId}/master.m3u8`,
-      videoBuffer,
-      'application/vnd.apple.mpegurl'
+    console.log(
+      `[Upload] Video processed: ${result.totalSegments} segments, ${result.durationSeconds}s duration`
     );
 
-    // Upload thumbnail if provided
+    // 2. Upload HLS package to storage
+    const storage = getStorageProvider();
+    const contentUri = await uploadHLSPackage(storage, videoId, result.hlsPackage);
+    console.log(`[Upload] HLS package uploaded: ${contentUri}`);
+
+    // 3. Upload thumbnail if provided
     let thumbnailUri = '';
     if (thumbnailFile) {
-      const thumbnailBuffer = Buffer.from(await thumbnailFile.arrayBuffer());
-      const thumbnailExt = thumbnailFile.name.split('.').pop() || 'jpg';
-      thumbnailUri = await storage.upload(
-        `${videoId}/thumbnail.${thumbnailExt}`,
-        thumbnailBuffer,
-        thumbnailFile.type || 'image/jpeg'
-      );
+      thumbnailUri = await uploadThumbnail(storage, videoId, thumbnailFile);
+      console.log(`[Upload] Thumbnail uploaded: ${thumbnailUri}`);
     }
 
-    // Convert price to octas (bigint)
+    // 4. Convert price to octas (bigint)
     const priceInOctas = aptToOctas(pricePerSegment);
 
-    // Ensure creator exists in database (create if not)
+    // 5. Ensure creator exists in database (create if not)
     const existingCreator = await db.query.creators.findFirst({
       where: (creators, { eq }) => eq(creators.address, creatorAddress),
     });
@@ -95,7 +91,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Store in database
+    // 6. Store in database
     await db.insert(schema.videos).values({
       videoId,
       onChainVideoId: null, // Will be set after on-chain registration
@@ -104,24 +100,25 @@ export async function POST(request: NextRequest) {
       description,
       contentUri,
       thumbnailUri,
-      durationSeconds,
-      totalSegments,
+      durationSeconds: result.durationSeconds,
+      totalSegments: result.totalSegments,
       pricePerSegment: priceInOctas,
-      merkleRoot,
-      masterSecret,
+      merkleRoot: result.merkleRoot,
+      masterSecret: result.masterSecret,
       isActive: true,
       createdAt: new Date(),
       onChainTxHash: null,
     });
 
-    // Store Merkle tree
+    // 7. Store Merkle tree
     await db.insert(schema.merkleTrees).values({
       videoId,
-      treeData: serializeMerkleTree(merkleTree),
+      treeData: serializeMerkleTree(result.merkleTree),
     });
 
-    // Build the transaction payload for on-chain registration
-    // The client will sign this transaction
+    console.log(`[Upload] Database records created for video: ${videoId}`);
+
+    // 8. Build the transaction payload for on-chain registration
     const contractAddress = getContractAddress();
     const registerVideoPayload = {
       function: `${contractAddress}::protocol::register_video`,
@@ -129,12 +126,14 @@ export async function POST(request: NextRequest) {
       functionArguments: [
         contentUri, // content_uri: String
         thumbnailUri, // thumbnail_uri: String
-        durationSeconds.toString(), // duration_seconds: u64
-        totalSegments.toString(), // total_segments: u64
-        Array.from(Buffer.from(merkleRoot, 'hex')), // key_commitment_root: vector<u8>
+        result.durationSeconds.toString(), // duration_seconds: u64
+        result.totalSegments.toString(), // total_segments: u64
+        Array.from(Buffer.from(result.merkleRoot, 'hex')), // key_commitment_root: vector<u8>
         priceInOctas.toString(), // price_per_segment: u64
       ],
     };
+
+    console.log(`[Upload] Upload complete for video: ${videoId}`);
 
     return NextResponse.json({
       success: true,
@@ -142,9 +141,9 @@ export async function POST(request: NextRequest) {
         videoId,
         contentUri,
         thumbnailUri,
-        totalSegments,
-        durationSeconds,
-        merkleRoot,
+        totalSegments: result.totalSegments,
+        durationSeconds: result.durationSeconds,
+        merkleRoot: result.merkleRoot,
         pricePerSegment: priceInOctas.toString(),
       },
       // Return payload for client to sign on-chain registration
@@ -152,7 +151,55 @@ export async function POST(request: NextRequest) {
       payload: registerVideoPayload,
     });
   } catch (error) {
-    console.error('Upload error:', error);
+    console.error('[Upload] Error:', error);
+
+    // Handle specific error types with appropriate status codes
+    if (error instanceof VideoTooLongError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          code: 'VIDEO_TOO_LONG',
+          maxDuration: error.maxDuration,
+          actualDuration: error.actualDuration,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (error instanceof VideoTooLargeError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          code: 'VIDEO_TOO_LARGE',
+          maxSizeMB: error.maxSizeMB,
+          actualSizeMB: error.actualSizeMB,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (error instanceof UnsupportedFormatError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          code: 'UNSUPPORTED_FORMAT',
+          allowedFormats: error.allowedFormats,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (error instanceof VideoProcessingError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          code: 'PROCESSING_ERROR',
+          stage: error.stage,
+        },
+        { status: 500 }
+      );
+    }
+
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Upload failed' },
       { status: 500 }
