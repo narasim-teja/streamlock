@@ -140,6 +140,12 @@ export async function processVideo(
       masterSecret
     );
 
+    // Debug: Log first segment's key and IV for verification
+    if (keys.length > 0 && ivs.length > 0) {
+      console.log(`[VideoProcessor] Segment 0 Key (hex): ${keys[0].toString('hex')}`);
+      console.log(`[VideoProcessor] Segment 0 IV (hex): ${ivs[0].toString('hex')}`);
+    }
+
     // 7. Generate HLS package
     console.log(`[VideoProcessor] Generating HLS package`);
     const hlsPackage = generateHLSPackage(

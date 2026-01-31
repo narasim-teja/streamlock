@@ -83,10 +83,12 @@ export async function segmentVideo(
           `-c:a aac`,
           `-b:a 128k`,
           `-f segment`,
+          `-segment_format mpegts`, // Ensure proper MPEG-TS format for HLS
           `-segment_time ${segmentDuration}`,
           `-reset_timestamps 1`,
           `-map 0:v:0`,
           `-map 0:a:0?`, // Optional audio
+          `-bsf:v h264_mp4toannexb`, // Required for HLS compatibility
         ])
         .output(segmentPattern)
         .on('end', () => {

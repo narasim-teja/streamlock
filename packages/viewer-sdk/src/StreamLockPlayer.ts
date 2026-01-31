@@ -25,6 +25,7 @@ import {
   type SignAndSubmitTransactionFunction,
 } from './payment/x402Client.js';
 import { X402KeyLoader } from './playback/hlsLoader.js';
+import { createX402LoaderClass } from './playback/X402HlsLoader.js';
 
 /** Wallet adapter sign and submit function type (re-exported for convenience) */
 export type { SignAndSubmitTransactionFunction };
@@ -277,6 +278,9 @@ export class StreamLockPlayer {
     if (!this.currentVideo) {
       throw new Error('Player not initialized');
     }
+    if (!this.keyLoader) {
+      throw new Error('Session not started. Call startSession() or startSessionWithWallet() first.');
+    }
 
     this.videoElement = videoElement;
     this.options = {
@@ -293,32 +297,40 @@ export class StreamLockPlayer {
       throw new Error('HLS is not supported in this browser');
     }
 
-    // Create HLS instance
-    // Note: HLS.js doesn't directly support custom key loaders in a simple way.
-    // The X402KeyLoader is used separately, and we handle key fetching through
-    // segment-level events and manual key injection.
+    // Create custom loader class that intercepts key requests
+    // and handles x402 payment flow through X402KeyLoader
+    const X402Loader = createX402LoaderClass({
+      keyLoader: this.keyLoader,
+      onKeyLoading: (segmentIndex) => {
+        console.log(`StreamLock: Loading key for segment ${segmentIndex}`);
+      },
+      onKeyLoaded: (segmentIndex) => {
+        console.log(`StreamLock: Key loaded for segment ${segmentIndex}`);
+      },
+      onPaymentRequired: (segmentIndex) => {
+        console.log(`StreamLock: Payment required for segment ${segmentIndex}`);
+      },
+      onPaymentComplete: (segmentIndex, txHash) => {
+        console.log(`StreamLock: Payment complete for segment ${segmentIndex}: ${txHash}`);
+      },
+      onError: (segmentIndex, error) => {
+        console.error(`StreamLock: Error loading key for segment ${segmentIndex}:`, error);
+        this.options?.onError?.(error);
+      },
+    });
+
+    // Create HLS instance with custom loader for x402 key requests
     this.hls = new Hls({
       enableWorker: true,
       lowLatencyMode: false,
+      loader: X402Loader,
     });
 
     this.hls.loadSource(this.currentVideo.contentUri);
     this.hls.attachMedia(videoElement);
 
     this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      // Ready to play
       console.log('StreamLock: Manifest parsed, ready to play');
-    });
-
-    // Handle segment loading to trigger x402 payment flow
-    this.hls.on(Hls.Events.FRAG_LOADING, (_event, data) => {
-      if (this.keyLoader && data.frag.sn !== 'initSegment') {
-        const segmentIndex = typeof data.frag.sn === 'number' ? data.frag.sn : 0;
-        // Pre-fetch key for this segment (async, don't block)
-        this.keyLoader.loadKey(segmentIndex).catch((err) => {
-          console.warn('Key prefetch failed for segment', segmentIndex, err);
-        });
-      }
     });
 
     this.hls.on(Hls.Events.ERROR, (_event, data) => {

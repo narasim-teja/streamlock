@@ -3,9 +3,7 @@
  */
 
 import type { Segment, EncryptedSegment } from '@streamlock/common';
-import { encryptSegment } from '@streamlock/crypto';
-import { sha256 } from '@noble/hashes/sha256';
-import { hkdf } from '@noble/hashes/hkdf';
+import { encryptSegment, deriveSegmentIV } from '@streamlock/crypto';
 
 /** Encryption result */
 export interface EncryptionResult {
@@ -52,22 +50,6 @@ export async function encryptVideoSegments(
   }
 
   return { encryptedSegments, ivs };
-}
-
-/**
- * Derive IV for a segment using HKDF from master secret
- * This ensures IVs are cryptographically secure and unpredictable
- * without knowing the master secret
- */
-function deriveSegmentIV(masterSecret: Buffer, videoId: string, segmentIndex: number): Buffer {
-  // Use HKDF to derive IV from master secret
-  // info = "iv:{videoId}:{segmentIndex}" ensures unique IV per segment
-  const info = Buffer.from(`iv:${videoId}:${segmentIndex}`);
-  const salt = sha256(Buffer.from('streamlock-iv-salt'));
-
-  // Derive 16 bytes for AES-128 IV
-  const derived = hkdf(sha256, masterSecret, salt, info, 16);
-  return Buffer.from(derived);
 }
 
 /**

@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import { useWallet } from '@aptos-labs/wallet-adapter-react';
 import Link from 'next/link';
 import Hls from 'hls.js';
+import { Aptos, AptosConfig, Network } from '@aptos-labs/ts-sdk';
 import { ConnectButton } from '@/components/wallet/ConnectButton';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -14,6 +15,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/Separator';
 import { formatApt, truncateAddress } from '@streamlock/common';
+import { X402KeyLoader, createX402LoaderClass } from '@streamlock/viewer-sdk';
 import { config } from '@/lib/config';
 import {
   Play,
@@ -45,23 +47,30 @@ interface VideoInfo {
 interface PaymentRecord {
   segmentIndex: number;
   amount: bigint;
+  txHash: string;
   timestamp: number;
 }
 
 interface SessionState {
-  sessionId: string;
+  sessionId: bigint;
+  videoId: bigint;
   prepaidBalance: bigint;
   segmentsPaid: number;
   isActive: boolean;
 }
 
-// Cache for decryption keys (to avoid re-paying for same segment)
-const keyCache = new Map<string, ArrayBuffer>();
-
 function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+// Create Aptos client based on network config
+function createAptosClient(): Aptos {
+  const network = config.aptosNetwork === 'mainnet' ? Network.MAINNET :
+                  config.aptosNetwork === 'devnet' ? Network.DEVNET :
+                  Network.TESTNET;
+  return new Aptos(new AptosConfig({ network }));
 }
 
 export default function WatchPage() {
@@ -82,6 +91,7 @@ export default function WatchPage() {
   // Player state
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const keyLoaderRef = useRef<X402KeyLoader | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -109,7 +119,7 @@ export default function WatchPage() {
 
   // Initialize HLS.js player when session starts
   useEffect(() => {
-    if (!session || !video || !videoRef.current) return;
+    if (!session || !video || !videoRef.current || !signAndSubmitTransaction || !account?.address) return;
 
     const videoEl = videoRef.current;
 
@@ -119,75 +129,122 @@ export default function WatchPage() {
     }
 
     if (Hls.isSupported()) {
-      const hls = new Hls({
-        debug: false,
-        enableWorker: true,
-        // Add X-Payment header to key requests
-        xhrSetup: (xhr, url) => {
-          // Check if this is a key request
-          if (url.includes('/key/')) {
-            xhr.setRequestHeader('X-Payment', JSON.stringify({
-              txHash: `demo-tx-${Date.now()}`,
-              network: 'aptos-testnet',
-              sessionId: session.sessionId,
-            }));
-          }
+      // Create Aptos client
+      const aptosClient = createAptosClient();
+
+      // Wrap the wallet adapter's signAndSubmitTransaction to match SDK's expected signature
+      // Wallet adapter expects { data: payload } but SDK passes payload directly
+      const signerWrapper = async (payload: Parameters<typeof signAndSubmitTransaction>[0]['data']) => {
+        const result = await signAndSubmitTransaction({ data: payload });
+        return result;
+      };
+
+      // Create key loader for x402 payment flow
+      const keyLoader = new X402KeyLoader({
+        keyServerBaseUrl: '/api',
+        sessionId: session.sessionId,
+        videoId: session.videoId,
+        localVideoId: video.videoId,
+        aptosClient,
+        contractAddress: config.contractAddress,
+        accountAddress: account.address.toString(),
+        signer: signerWrapper,
+        onPayment: (segmentIndex, txHash, amount) => {
+          console.log(`[StreamLock] Payment for segment ${segmentIndex}: ${txHash}`);
+          setPayments(prev => {
+            if (prev.some(p => p.segmentIndex === segmentIndex)) {
+              return prev;
+            }
+            return [...prev, {
+              segmentIndex,
+              amount,
+              txHash,
+              timestamp: Date.now(),
+            }];
+          });
+        },
+        onKeyReceived: (key) => {
+          console.log(`[StreamLock] Key received for segment ${key.segmentIndex}`);
+          setIsLoadingKey(false);
+          setCurrentKeySegment(null);
+        },
+        onError: (error) => {
+          console.error('[StreamLock] Key loader error:', error);
+          setIsLoadingKey(false);
         },
       });
 
-      // Track key loading for UI feedback
-      hls.on(Hls.Events.KEY_LOADING, (event, data) => {
-        const segmentMatch = data.frag?.decryptdata?.uri?.match(/\/key\/(\d+)/);
-        const segmentIndex = segmentMatch ? parseInt(segmentMatch[1]) : 0;
-        console.log(`[HLS] Loading key for segment ${segmentIndex}`);
-        setCurrentKeySegment(segmentIndex);
-        setIsLoadingKey(true);
+      keyLoaderRef.current = keyLoader;
+
+      // Create custom HLS.js loader that intercepts key requests
+      const X402Loader = createX402LoaderClass({
+        keyLoader,
+        onKeyLoading: (segmentIndex) => {
+          console.log(`[StreamLock] Loading key for segment ${segmentIndex}`);
+          setCurrentKeySegment(segmentIndex);
+          setIsLoadingKey(true);
+        },
+        onKeyLoaded: (segmentIndex) => {
+          console.log(`[StreamLock] Key loaded for segment ${segmentIndex}`);
+          setIsLoadingKey(false);
+          setCurrentKeySegment(null);
+        },
+        onError: (segmentIndex, error) => {
+          console.error(`[StreamLock] Error loading key for segment ${segmentIndex}:`, error);
+          setIsLoadingKey(false);
+          setError(`Failed to load key for segment ${segmentIndex}: ${error.message}`);
+        },
       });
 
-      hls.on(Hls.Events.KEY_LOADED, (event, data) => {
-        const segmentMatch = data.frag?.decryptdata?.uri?.match(/\/key\/(\d+)/);
-        const segmentIndex = segmentMatch ? parseInt(segmentMatch[1]) : 0;
-        console.log(`[HLS] Key loaded for segment ${segmentIndex}`);
-        setIsLoadingKey(false);
-        setCurrentKeySegment(null);
-
-        // Record the "payment" for this segment
-        setPayments(prev => {
-          // Avoid duplicates
-          if (prev.some(p => p.segmentIndex === segmentIndex)) {
-            return prev;
-          }
-          return [...prev, {
-            segmentIndex,
-            amount: BigInt(video.pricePerSegment),
-            timestamp: Date.now(),
-          }];
-        });
+      // Create HLS instance with custom loader
+      const hls = new Hls({
+        debug: true, // Enable debug to see what's happening
+        enableWorker: true,
+        loader: X402Loader,
       });
 
       hls.loadSource(video.contentUri);
       hls.attachMedia(videoEl);
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        console.log('[HLS] Manifest parsed, ready to play');
-        videoEl.play().catch(console.error);
+        console.log('[StreamLock] Manifest parsed, ready to play');
+      });
+
+      // Log fragment loading progress
+      hls.on(Hls.Events.FRAG_LOADING, (event, data) => {
+        console.log('[StreamLock] Fragment loading:', data.frag.sn);
+      });
+
+      hls.on(Hls.Events.FRAG_LOADED, (event, data) => {
+        console.log('[StreamLock] Fragment loaded:', data.frag.sn);
+      });
+
+      hls.on(Hls.Events.FRAG_DECRYPTED, (event, data) => {
+        console.log('[StreamLock] Fragment DECRYPTED:', data.frag.sn);
+      });
+
+      hls.on(Hls.Events.FRAG_BUFFERED, (event, data) => {
+        console.log('[StreamLock] Fragment buffered:', data.frag.sn);
+        videoEl.play().catch((err) => {
+          console.log('[StreamLock] Autoplay blocked:', err.message);
+        });
       });
 
       hls.on(Hls.Events.ERROR, (event, data) => {
-        console.error('[HLS] Error:', data);
-        setIsLoadingKey(false);
+        console.error('[StreamLock] HLS error:', data);
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              console.log('[HLS] Network error, trying to recover...');
+              console.log('[StreamLock] Network error, trying to recover...');
               hls.startLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
-              console.log('[HLS] Media error, trying to recover...');
+              console.log('[StreamLock] Media error, trying to recover...');
               hls.recoverMediaError();
               break;
             default:
-              console.error('[HLS] Fatal error, cannot recover');
+              console.error('[StreamLock] Fatal error, cannot recover');
+              setError('Playback error. Please try again.');
               hls.destroy();
               break;
           }
@@ -196,12 +253,9 @@ export default function WatchPage() {
 
       hlsRef.current = hls;
     } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
-      // Native HLS support (Safari) - won't work with custom key loading
-      // For Safari, we'd need a different approach
-      videoEl.src = video.contentUri;
-      videoEl.addEventListener('loadedmetadata', () => {
-        videoEl.play().catch(console.error);
-      });
+      // Native HLS support (Safari) - won't work with x402 payment flow
+      // Safari would need a service worker approach for custom key loading
+      setError('Safari is not fully supported yet. Please use Chrome or Firefox.');
     }
 
     return () => {
@@ -209,8 +263,12 @@ export default function WatchPage() {
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+      if (keyLoaderRef.current) {
+        keyLoaderRef.current.clearCache();
+        keyLoaderRef.current = null;
+      }
     };
-  }, [session, video]);
+  }, [session, video, signAndSubmitTransaction, account?.address]);
 
   // Video element event handlers
   useEffect(() => {
@@ -246,28 +304,73 @@ export default function WatchPage() {
       const prepaidSegments = 20;
       const prepaidAmount = BigInt(video.pricePerSegment) * BigInt(prepaidSegments);
 
-      // If video has on-chain ID, call the contract
+      // Check if video has on-chain ID for real contract interaction
       if (video.onChainVideoId) {
         const payload = {
           function: `${config.contractAddress}::protocol::start_session` as `${string}::${string}::${string}`,
           functionArguments: [
             video.onChainVideoId,
             prepaidSegments.toString(),
-            '7200',
+            '7200', // 2 hour expiry
           ],
         };
 
-        await signAndSubmitTransaction({ data: payload });
-      }
+        const pendingTx = await signAndSubmitTransaction({ data: payload });
 
-      // Create local session state
-      const mockSessionId = `session-${Date.now()}`;
-      setSession({
-        sessionId: mockSessionId,
-        prepaidBalance: prepaidAmount,
-        segmentsPaid: 0,
-        isActive: true,
-      });
+        // Wait for transaction and extract session info from events
+        const aptosClient = createAptosClient();
+        const tx = await aptosClient.waitForTransaction({
+          transactionHash: pendingTx.hash,
+        });
+
+        // Get full transaction with events
+        const fullTx = await aptosClient.getTransactionByHash({
+          transactionHash: pendingTx.hash,
+        });
+
+        // Extract session ID from event
+        const events = 'events' in fullTx ? fullTx.events : [];
+        const sessionEvent = events.find((e: { type: string }) =>
+          e.type.includes('SessionStartedEvent')
+        );
+
+        if (sessionEvent) {
+          const sessionData = sessionEvent.data as {
+            session_id: string;
+            video_id: string;
+            prepaid_amount: string;
+          };
+
+          setSession({
+            sessionId: BigInt(sessionData.session_id),
+            videoId: BigInt(sessionData.video_id),
+            prepaidBalance: BigInt(sessionData.prepaid_amount),
+            segmentsPaid: 0,
+            isActive: true,
+          });
+        } else {
+          // Fallback: create mock session if event not found
+          console.warn('Session event not found, using fallback session');
+          setSession({
+            sessionId: BigInt(Date.now()),
+            videoId: BigInt(video.onChainVideoId),
+            prepaidBalance: prepaidAmount,
+            segmentsPaid: 0,
+            isActive: true,
+          });
+        }
+      } else {
+        // No on-chain video ID yet - create a demo session for testing
+        // This allows testing the video playback flow before full on-chain registration
+        console.warn('Video not registered on-chain, using demo session');
+        setSession({
+          sessionId: BigInt(Date.now()),
+          videoId: 0n,
+          prepaidBalance: prepaidAmount,
+          segmentsPaid: 0,
+          isActive: true,
+        });
+      }
     } catch (err) {
       console.error('Failed to start session:', err);
       setError('Failed to start session. Please try again.');
@@ -278,13 +381,28 @@ export default function WatchPage() {
 
   // Top up session
   const handleTopUp = useCallback(async () => {
-    if (!session || !video) return;
+    if (!session || !video || !signAndSubmitTransaction) return;
 
     setSessionLoading(true);
+    setError(null);
+
     try {
       const additionalSegments = 10;
       const additionalAmount = BigInt(video.pricePerSegment) * BigInt(additionalSegments);
 
+      if (video.onChainVideoId && session.sessionId > 0n) {
+        const payload = {
+          function: `${config.contractAddress}::protocol::top_up_session` as `${string}::${string}::${string}`,
+          functionArguments: [
+            session.sessionId.toString(),
+            additionalSegments.toString(),
+          ],
+        };
+
+        await signAndSubmitTransaction({ data: payload });
+      }
+
+      // Update local session state
       setSession((prev) =>
         prev
           ? {
@@ -293,13 +411,18 @@ export default function WatchPage() {
             }
           : null
       );
+
+      // Update key loader session if needed
+      if (keyLoaderRef.current) {
+        keyLoaderRef.current.updateSessionId(session.sessionId);
+      }
     } catch (err) {
       console.error('Failed to top up:', err);
       setError('Failed to top up session');
     } finally {
       setSessionLoading(false);
     }
-  }, [session, video]);
+  }, [session, video, signAndSubmitTransaction]);
 
   // End session
   const handleEndSession = useCallback(async () => {
@@ -307,13 +430,37 @@ export default function WatchPage() {
 
     setSessionLoading(true);
     try {
+      // End on-chain session if applicable
+      if (video?.onChainVideoId && session.sessionId > 0n && signAndSubmitTransaction) {
+        try {
+          const payload = {
+            function: `${config.contractAddress}::protocol::end_session` as `${string}::${string}::${string}`,
+            functionArguments: [session.sessionId.toString()],
+          };
+          await signAndSubmitTransaction({ data: payload });
+        } catch (err) {
+          console.warn('Failed to end on-chain session:', err);
+          // Continue with cleanup even if on-chain fails
+        }
+      }
+
+      // Cleanup HLS
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+
+      // Cleanup key loader
+      if (keyLoaderRef.current) {
+        keyLoaderRef.current.clearCache();
+        keyLoaderRef.current = null;
+      }
+
       setSession(null);
       setPayments([]);
-      keyCache.clear();
+      setIsLoadingKey(false);
+      setCurrentKeySegment(null);
+
       if (videoRef.current) {
         videoRef.current.pause();
         videoRef.current.currentTime = 0;
@@ -323,9 +470,9 @@ export default function WatchPage() {
     } finally {
       setSessionLoading(false);
     }
-  }, [session]);
+  }, [session, video, signAndSubmitTransaction]);
 
-  // Calculate current segment based on time
+  // Calculate current segment based on time (5 seconds per segment)
   const currentSegment = video ? Math.floor(currentTime / 5) : 0;
 
   // Calculate remaining segments
@@ -397,6 +544,17 @@ export default function WatchPage() {
       </header>
 
       <div className="container mx-auto px-4 py-8">
+        {/* Error banner */}
+        {error && (
+          <div className="mb-4 p-4 bg-destructive/10 border border-destructive/20 rounded-lg text-destructive flex items-center gap-2">
+            <AlertCircle className="h-4 w-4" />
+            {error}
+            <button onClick={() => setError(null)} className="ml-auto">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
         <div className="grid lg:grid-cols-3 gap-8">
           {/* Video Player */}
           <div className="lg:col-span-2">
@@ -518,6 +676,10 @@ export default function WatchPage() {
                           {currentSegment + 1} / {video?.totalSegments || 0}
                         </span>
                       </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Segments paid</span>
+                        <span className="font-semibold">{payments.length}</span>
+                      </div>
                     </div>
 
                     {/* Progress */}
@@ -581,7 +743,7 @@ export default function WatchPage() {
                     <Unlock className="h-4 w-4" />
                     Decrypted Segments
                   </CardTitle>
-                  <CardDescription>Keys fetched as you watch</CardDescription>
+                  <CardDescription>On-chain payments for segment keys</CardDescription>
                 </CardHeader>
                 <CardContent>
                   {payments.length === 0 ? (
@@ -600,7 +762,7 @@ export default function WatchPage() {
                               <Unlock className="h-3 w-3 text-green-500" />
                               Segment {payment.segmentIndex + 1}
                             </span>
-                            <span className="font-mono text-muted-foreground">
+                            <span className="font-mono text-muted-foreground text-xs">
                               {formatApt(payment.amount)} APT
                             </span>
                           </div>
@@ -643,91 +805,4 @@ export default function WatchPage() {
       </div>
     </main>
   );
-}
-
-/**
- * Custom key loader that handles x402 payment flow
- * For demo purposes, this fetches keys without actual payment verification
- */
-async function loadKeyWithPayment(
-  context: any,
-  config: any,
-  callbacks: any,
-  video: VideoInfo,
-  session: SessionState,
-  onPayment: (segment: number, amount: bigint) => void,
-  setCurrentKeySegment: (segment: number | null) => void,
-  setIsLoadingKey: (loading: boolean) => void
-) {
-  const keyUrl = context.url;
-
-  // Extract segment index from URL (format: /api/videos/{videoId}/key/{segment})
-  const segmentMatch = keyUrl.match(/\/key\/(\d+)/);
-  const segmentIndex = segmentMatch ? parseInt(segmentMatch[1]) : 0;
-
-  // Check cache first
-  const cacheKey = `${video.videoId}-${segmentIndex}`;
-  if (keyCache.has(cacheKey)) {
-    console.log(`[KeyLoader] Using cached key for segment ${segmentIndex}`);
-    const cachedKey = keyCache.get(cacheKey)!;
-    callbacks.onSuccess(
-      { data: cachedKey },
-      { url: keyUrl },
-      context
-    );
-    return;
-  }
-
-  setCurrentKeySegment(segmentIndex);
-  setIsLoadingKey(true);
-
-  try {
-    console.log(`[KeyLoader] Fetching key for segment ${segmentIndex}`);
-
-    // For demo: skip 402 flow and just pass a mock payment header
-    // In production: handle 402 response, pay on-chain, then retry
-    const response = await fetch(keyUrl, {
-      headers: {
-        'X-Payment': JSON.stringify({
-          txHash: `demo-tx-${Date.now()}`,
-          network: 'aptos-testnet',
-          sessionId: session.sessionId,
-        }),
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Key fetch failed: ${response.status}`);
-    }
-
-    const keyData = await response.json();
-
-    // Convert base64 key to ArrayBuffer for HLS.js
-    const keyBytes = Uint8Array.from(atob(keyData.key), c => c.charCodeAt(0));
-    const keyBuffer = keyBytes.buffer;
-
-    // Cache the key
-    keyCache.set(cacheKey, keyBuffer);
-
-    // Record payment
-    onPayment(segmentIndex, BigInt(video.pricePerSegment));
-
-    console.log(`[KeyLoader] Key loaded for segment ${segmentIndex}`);
-
-    callbacks.onSuccess(
-      { data: keyBuffer },
-      { url: keyUrl },
-      context
-    );
-  } catch (error) {
-    console.error(`[KeyLoader] Error loading key for segment ${segmentIndex}:`, error);
-    callbacks.onError(
-      { code: 2, text: 'Key loading failed' },
-      context,
-      null
-    );
-  } finally {
-    setIsLoadingKey(false);
-    setCurrentKeySegment(null);
-  }
 }

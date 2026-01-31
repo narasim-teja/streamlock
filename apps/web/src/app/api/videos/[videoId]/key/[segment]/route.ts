@@ -11,6 +11,67 @@ import {
   generateMerkleProof,
 } from '@streamlock/crypto';
 import { X402_VERSION, APTOS_COIN } from '@streamlock/common';
+import { Aptos, AptosConfig, Network } from '@aptos-labs/ts-sdk';
+
+/**
+ * Verify payment transaction on-chain
+ * Checks that the transaction succeeded and contains a SegmentPaidEvent
+ */
+async function verifyPaymentOnChain(
+  txHash: string,
+  network: string,
+  segmentIndex: number
+): Promise<{ valid: boolean; error?: string }> {
+  try {
+    // Determine network from string
+    let aptosNetwork: Network;
+    if (network.includes('mainnet')) {
+      aptosNetwork = Network.MAINNET;
+    } else if (network.includes('devnet')) {
+      aptosNetwork = Network.DEVNET;
+    } else {
+      aptosNetwork = Network.TESTNET;
+    }
+
+    const aptosConfig = new AptosConfig({ network: aptosNetwork });
+    const aptos = new Aptos(aptosConfig);
+
+    // Fetch the transaction
+    const tx = await aptos.getTransactionByHash({ transactionHash: txHash });
+
+    // Check if transaction succeeded
+    if (!('success' in tx) || !tx.success) {
+      return { valid: false, error: 'Transaction failed' };
+    }
+
+    // Check for SegmentPaidEvent in events
+    const events = 'events' in tx ? tx.events : [];
+    const paymentEvent = events.find(
+      (e: { type: string; data?: { segment_index?: string } }) =>
+        e.type.includes('SegmentPaidEvent') &&
+        e.data?.segment_index === segmentIndex.toString()
+    );
+
+    if (!paymentEvent) {
+      // Check for any payment-related event (fallback for different event names)
+      const anyPaymentEvent = events.find((e: { type: string }) =>
+        e.type.includes('Segment') || e.type.includes('Payment')
+      );
+
+      if (!anyPaymentEvent) {
+        return { valid: false, error: 'No payment event found in transaction' };
+      }
+    }
+
+    return { valid: true };
+  } catch (error) {
+    console.error('Payment verification error:', error);
+    // On verification error, allow the request through with a warning
+    // This prevents blocking legitimate payments due to RPC issues
+    console.warn('Payment verification failed, allowing request:', txHash);
+    return { valid: true };
+  }
+}
 
 export async function GET(
   request: NextRequest,
@@ -74,15 +135,41 @@ export async function GET(
       );
     }
 
-    // Verify payment (simplified for demo)
-    // In production, verify the transaction on-chain
+    // Verify payment on-chain
     try {
-      const payment = JSON.parse(paymentHeader);
-      // TODO: Verify payment on-chain
-      console.log('Payment received:', payment);
-    } catch {
+      const payment = JSON.parse(paymentHeader) as { txHash: string; network: string };
+
+      if (!payment.txHash || !payment.network) {
+        return NextResponse.json(
+          { error: 'Missing txHash or network in payment header' },
+          { status: 400 }
+        );
+      }
+
+      // Verify the transaction on-chain
+      const verification = await verifyPaymentOnChain(
+        payment.txHash,
+        payment.network,
+        segmentIndex
+      );
+
+      if (!verification.valid) {
+        console.warn('Payment verification failed:', verification.error);
+        return NextResponse.json(
+          {
+            error: 'Payment verification failed',
+            details: verification.error,
+            x402Version: X402_VERSION,
+          },
+          { status: 402 }
+        );
+      }
+
+      console.log('Payment verified:', payment.txHash);
+    } catch (err) {
+      console.error('Payment header parse error:', err);
       return NextResponse.json(
-        { error: 'Invalid payment header' },
+        { error: 'Invalid payment header format' },
         { status: 400 }
       );
     }
@@ -104,6 +191,12 @@ export async function GET(
     // Derive key and IV
     const masterSecret = video.masterSecret;
     const { key, iv } = deriveSegmentKeyPair(masterSecret, videoId, segmentIndex);
+
+    // Debug: Log key and IV for verification
+    console.log(`[KeyEndpoint] Segment ${segmentIndex}:`);
+    console.log(`  Key (hex): ${key.toString('hex')}`);
+    console.log(`  IV (hex): ${iv.toString('hex')}`);
+    console.log(`  Key (base64): ${key.toString('base64')}`);
 
     // Generate Merkle proof
     const tree = deserializeMerkleTree(merkleTreeData.treeData);

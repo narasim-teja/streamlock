@@ -244,10 +244,19 @@ export class StreamLockContract {
         keyCommitmentRoot,
         pricePerSegment,
         isActive,
-      ] = result as [string, string, string, string, string, number[], string, boolean];
+      ] = result as [string, string, string, string, string, number[] | string, string, boolean];
 
-      // Validate keyCommitmentRoot is an array
-      if (!Array.isArray(keyCommitmentRoot)) {
+      // Convert keyCommitmentRoot to hex string
+      // Aptos can return it as either a byte array or a hex string depending on version
+      let keyCommitmentRootHex: string;
+      if (Array.isArray(keyCommitmentRoot)) {
+        keyCommitmentRootHex = Buffer.from(keyCommitmentRoot).toString('hex');
+      } else if (typeof keyCommitmentRoot === 'string') {
+        // Already a hex string, just strip 0x prefix if present
+        keyCommitmentRootHex = keyCommitmentRoot.startsWith('0x')
+          ? keyCommitmentRoot.slice(2)
+          : keyCommitmentRoot;
+      } else {
         console.error('Invalid keyCommitmentRoot format:', keyCommitmentRoot);
         return null;
       }
@@ -259,7 +268,7 @@ export class StreamLockContract {
         thumbnailUri,
         durationSeconds: parseInt(String(durationSeconds), 10),
         totalSegments: parseInt(String(totalSegments), 10),
-        keyCommitmentRoot: Buffer.from(keyCommitmentRoot).toString('hex'),
+        keyCommitmentRoot: keyCommitmentRootHex,
         pricePerSegment: BigInt(pricePerSegment),
         totalViews: 0, // Not returned by view function
         totalEarnings: 0n, // Not returned by view function
