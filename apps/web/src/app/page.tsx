@@ -7,8 +7,18 @@ export default function Home() {
       {/* Header */}
       <header className="border-b">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-primary">StreamLock</h1>
-          <ConnectButton />
+          <Link href="/" className="text-2xl font-bold text-primary">
+            StreamLock
+          </Link>
+          <nav className="flex items-center gap-4">
+            <Link href="/browse" className="text-muted-foreground hover:text-foreground">
+              Browse
+            </Link>
+            <Link href="/creator" className="text-muted-foreground hover:text-foreground">
+              Creator
+            </Link>
+            <ConnectButton />
+          </nav>
         </div>
       </header>
 

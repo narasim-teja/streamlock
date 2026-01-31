@@ -1,5 +1,8 @@
 /**
  * POST /api/upload - Video upload endpoint
+ *
+ * Handles video upload, stores metadata in database, and returns
+ * the transaction payload for on-chain registration.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -13,6 +16,7 @@ import {
   serializeMerkleTree,
 } from '@streamlock/crypto';
 import { aptToOctas } from '@streamlock/common';
+import { getContractAddress } from '@/lib/aptos';
 
 export async function POST(request: NextRequest) {
   try {
@@ -25,10 +29,11 @@ export async function POST(request: NextRequest) {
       (formData.get('pricePerSegment') as string) || '0.001'
     );
     const creatorAddress = formData.get('creatorAddress') as string;
+    const thumbnailFile = formData.get('thumbnail') as File | null;
 
-    if (!videoFile || !title) {
+    if (!videoFile || !title || !creatorAddress) {
       return NextResponse.json(
-        { error: 'Missing required fields' },
+        { error: 'Missing required fields (video, title, creatorAddress)' },
         { status: 400 }
       );
     }
@@ -36,9 +41,13 @@ export async function POST(request: NextRequest) {
     // Generate video ID
     const videoId = crypto.randomUUID().replace(/-/g, '');
 
-    // For demo, simulate video processing
-    // In production, use the creator-sdk to segment and encrypt
-    const totalSegments = 20; // Simulated
+    // For demo/MVP, simulate video processing
+    // In production, use the creator-sdk to segment, encrypt, and package as HLS
+    // The full pipeline would be:
+    // 1. segmentVideo() - split into 5-second segments
+    // 2. encryptVideoSegments() - encrypt each segment
+    // 3. generateHLSPackage() - create m3u8 playlists
+    const totalSegments = 20; // Simulated - would come from actual video duration
     const durationSeconds = totalSegments * 5;
 
     // Generate cryptographic material
@@ -47,32 +56,61 @@ export async function POST(request: NextRequest) {
     const merkleTree = buildMerkleTree(keys);
     const merkleRoot = getMerkleRoot(merkleTree);
 
-    // Store video (simulated)
+    // Store video and thumbnail
     const storage = getStorageProvider();
     const videoBuffer = Buffer.from(await videoFile.arrayBuffer());
+
+    // Upload video content
     const contentUri = await storage.upload(
       `${videoId}/master.m3u8`,
       videoBuffer,
       'application/vnd.apple.mpegurl'
     );
 
-    // Store in database
-    const now = Math.floor(Date.now() / 1000);
+    // Upload thumbnail if provided
+    let thumbnailUri = '';
+    if (thumbnailFile) {
+      const thumbnailBuffer = Buffer.from(await thumbnailFile.arrayBuffer());
+      const thumbnailExt = thumbnailFile.name.split('.').pop() || 'jpg';
+      thumbnailUri = await storage.upload(
+        `${videoId}/thumbnail.${thumbnailExt}`,
+        thumbnailBuffer,
+        thumbnailFile.type || 'image/jpeg'
+      );
+    }
 
+    // Convert price to octas (bigint)
+    const priceInOctas = aptToOctas(pricePerSegment);
+
+    // Ensure creator exists in database (create if not)
+    const existingCreator = await db.query.creators.findFirst({
+      where: (creators, { eq }) => eq(creators.address, creatorAddress),
+    });
+
+    if (!existingCreator) {
+      await db.insert(schema.creators).values({
+        address: creatorAddress,
+        metadataUri: null,
+        registeredAt: new Date(),
+      });
+    }
+
+    // Store in database
     await db.insert(schema.videos).values({
       videoId,
-      creatorAddress: creatorAddress || 'unknown',
+      onChainVideoId: null, // Will be set after on-chain registration
+      creatorAddress,
       title,
       description,
       contentUri,
-      thumbnailUri: '',
+      thumbnailUri,
       durationSeconds,
       totalSegments,
-      pricePerSegment: Number(aptToOctas(pricePerSegment)),
+      pricePerSegment: priceInOctas,
       merkleRoot,
       masterSecret,
       isActive: true,
-      createdAt: now,
+      createdAt: new Date(),
       onChainTxHash: null,
     });
 
@@ -82,18 +120,42 @@ export async function POST(request: NextRequest) {
       treeData: serializeMerkleTree(merkleTree),
     });
 
+    // Build the transaction payload for on-chain registration
+    // The client will sign this transaction
+    const contractAddress = getContractAddress();
+    const registerVideoPayload = {
+      function: `${contractAddress}::protocol::register_video`,
+      typeArguments: [],
+      functionArguments: [
+        contentUri, // content_uri: String
+        thumbnailUri, // thumbnail_uri: String
+        durationSeconds.toString(), // duration_seconds: u64
+        totalSegments.toString(), // total_segments: u64
+        Array.from(Buffer.from(merkleRoot, 'hex')), // key_commitment_root: vector<u8>
+        priceInOctas.toString(), // price_per_segment: u64
+      ],
+    };
+
     return NextResponse.json({
       success: true,
       data: {
         videoId,
         contentUri,
+        thumbnailUri,
         totalSegments,
+        durationSeconds,
         merkleRoot,
-        pricePerSegment: Number(aptToOctas(pricePerSegment)),
+        pricePerSegment: priceInOctas.toString(),
       },
+      // Return payload for client to sign on-chain registration
+      requiresSignature: true,
+      payload: registerVideoPayload,
     });
   } catch (error) {
     console.error('Upload error:', error);
-    return NextResponse.json({ error: 'Upload failed' }, { status: 500 });
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Upload failed' },
+      { status: 500 }
+    );
   }
 }

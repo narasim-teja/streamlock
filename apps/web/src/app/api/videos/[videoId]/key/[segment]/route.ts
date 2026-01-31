@@ -21,11 +21,11 @@ export async function GET(
     const segmentIndex = parseInt(segment);
 
     // Get video from database
-    const video = await db
+    const videos = await db
       .select()
       .from(schema.videos)
-      .where(eq(schema.videos.videoId, videoId))
-      .get();
+      .where(eq(schema.videos.videoId, videoId));
+    const video = videos[0];
 
     if (!video) {
       return NextResponse.json({ error: 'Video not found' }, { status: 404 });
@@ -88,11 +88,11 @@ export async function GET(
     }
 
     // Get master secret and Merkle tree
-    const merkleTreeData = await db
+    const merkleTreeResults = await db
       .select()
       .from(schema.merkleTrees)
-      .where(eq(schema.merkleTrees.videoId, videoId))
-      .get();
+      .where(eq(schema.merkleTrees.videoId, videoId));
+    const merkleTreeData = merkleTreeResults[0];
 
     if (!merkleTreeData || !video.masterSecret) {
       return NextResponse.json(

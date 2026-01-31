@@ -2,66 +2,138 @@
 
 import { useState } from 'react';
 import { useWallet } from '@aptos-labs/wallet-adapter-react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ConnectButton } from '@/components/wallet/ConnectButton';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
+import { Textarea } from '@/components/ui/Textarea';
+import { Label } from '@/components/ui/Label';
+import { Progress } from '@/components/ui/Progress';
+import { Alert, AlertDescription } from '@/components/ui/Alert';
+import {
+  Upload,
+  Video,
+  Image,
+  DollarSign,
+  Wallet,
+  CheckCircle,
+  AlertCircle,
+  Loader2,
+} from 'lucide-react';
+
+type UploadStage =
+  | 'idle'
+  | 'uploading'
+  | 'processing'
+  | 'storing'
+  | 'registering'
+  | 'complete'
+  | 'error';
+
+const STAGE_PROGRESS: Record<UploadStage, number> = {
+  idle: 0,
+  uploading: 20,
+  processing: 50,
+  storing: 70,
+  registering: 90,
+  complete: 100,
+  error: 0,
+};
+
+const STAGE_LABELS: Record<UploadStage, string> = {
+  idle: '',
+  uploading: 'Uploading video...',
+  processing: 'Processing and encrypting...',
+  storing: 'Storing to cloud...',
+  registering: 'Registering on-chain...',
+  complete: 'Upload complete!',
+  error: 'Upload failed',
+};
 
 export default function UploadPage() {
-  const { connected } = useWallet();
+  const { connected, account, signAndSubmitTransaction } = useWallet();
+  const router = useRouter();
+
   const [file, setFile] = useState<File | null>(null);
+  const [thumbnail, setThumbnail] = useState<File | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState('0.001');
-  const [uploading, setUploading] = useState(false);
-  const [stage, setStage] = useState<string>('');
-  const [progress, setProgress] = useState(0);
+  const [stage, setStage] = useState<UploadStage>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const [uploadedVideoId, setUploadedVideoId] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!file) return;
+    if (!file || !connected || !account?.address) return;
 
-    setUploading(true);
-    setStage('Preparing upload...');
-    setProgress(10);
+    setStage('uploading');
+    setError(null);
 
     try {
+      // Prepare form data
       const formData = new FormData();
       formData.append('video', file);
       formData.append('title', title);
       formData.append('description', description);
       formData.append('pricePerSegment', price);
+      formData.append('creatorAddress', account.address);
+      if (thumbnail) {
+        formData.append('thumbnail', thumbnail);
+      }
 
-      setStage('Uploading video...');
-      setProgress(30);
+      setStage('processing');
 
+      // Upload to server
       const response = await fetch('/api/upload', {
         method: 'POST',
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error('Upload failed');
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Upload failed');
       }
 
-      setStage('Processing complete!');
-      setProgress(100);
-
       const result = await response.json();
-      console.log('Upload result:', result);
+      setUploadedVideoId(result.data.videoId);
 
-      // Redirect to video page
-      // router.push(`/watch/${result.videoId}`);
-    } catch (error) {
-      console.error('Upload error:', error);
-      setStage('Upload failed');
-    } finally {
-      setUploading(false);
+      setStage('storing');
+
+      // If on-chain registration is required, sign the transaction
+      if (result.requiresSignature && signAndSubmitTransaction) {
+        setStage('registering');
+
+        try {
+          await signAndSubmitTransaction({
+            data: result.payload,
+          });
+        } catch (txError) {
+          // Transaction was rejected or failed
+          // Video is still stored locally, just not on-chain
+          console.warn('On-chain registration skipped:', txError);
+        }
+      }
+
+      setStage('complete');
+
+      // Redirect to video page after a short delay
+      setTimeout(() => {
+        router.push(`/watch/${result.data.videoId}`);
+      }, 2000);
+    } catch (err) {
+      console.error('Upload error:', err);
+      setError(err instanceof Error ? err.message : 'Upload failed');
+      setStage('error');
     }
   };
 
+  const isUploading = stage !== 'idle' && stage !== 'complete' && stage !== 'error';
+
   return (
-    <main className="min-h-screen">
+    <main className="min-h-screen bg-background">
       {/* Header */}
       <header className="border-b">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
@@ -86,6 +158,7 @@ export default function UploadPage() {
       <div className="container mx-auto px-4 py-8 max-w-2xl">
         {!connected ? (
           <div className="text-center py-20">
+            <Wallet className="h-16 w-16 mx-auto mb-4 text-muted-foreground" />
             <h2 className="text-2xl font-bold mb-4">Connect Your Wallet</h2>
             <p className="text-muted-foreground mb-6">
               Connect your Aptos wallet to upload videos
@@ -95,91 +168,171 @@ export default function UploadPage() {
         ) : (
           <Card>
             <CardHeader>
-              <CardTitle>Upload Video</CardTitle>
+              <CardTitle className="flex items-center gap-2">
+                <Upload className="h-5 w-5" />
+                Upload Video
+              </CardTitle>
+              <CardDescription>
+                Upload your video to start monetizing. Each segment (~5 seconds) will
+                be encrypted and viewers pay per segment watched.
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSubmit} className="space-y-6">
                 {/* Video File */}
-                <div>
-                  <label className="block text-sm font-medium mb-2">
+                <div className="space-y-2">
+                  <Label htmlFor="video" className="flex items-center gap-2">
+                    <Video className="h-4 w-4" />
                     Video File
-                  </label>
-                  <input
+                  </Label>
+                  <Input
+                    id="video"
                     type="file"
                     accept="video/*"
                     onChange={(e) => setFile(e.target.files?.[0] || null)}
-                    className="block w-full text-sm border rounded-lg p-2"
+                    disabled={isUploading}
                     required
-                    disabled={uploading}
+                  />
+                  {file && (
+                    <p className="text-sm text-muted-foreground">
+                      Selected: {file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)
+                    </p>
+                  )}
+                </div>
+
+                {/* Thumbnail */}
+                <div className="space-y-2">
+                  <Label htmlFor="thumbnail" className="flex items-center gap-2">
+                    <Image className="h-4 w-4" />
+                    Thumbnail (optional)
+                  </Label>
+                  <Input
+                    id="thumbnail"
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setThumbnail(e.target.files?.[0] || null)}
+                    disabled={isUploading}
                   />
                 </div>
 
                 {/* Title */}
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Title
-                  </label>
-                  <input
+                <div className="space-y-2">
+                  <Label htmlFor="title">Title</Label>
+                  <Input
+                    id="title"
                     type="text"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
-                    className="block w-full border rounded-lg p-2"
+                    placeholder="Enter video title"
+                    disabled={isUploading}
                     required
-                    disabled={uploading}
                   />
                 </div>
 
                 {/* Description */}
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Description
-                  </label>
-                  <textarea
+                <div className="space-y-2">
+                  <Label htmlFor="description">Description</Label>
+                  <Textarea
+                    id="description"
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
-                    className="block w-full border rounded-lg p-2"
+                    placeholder="Describe your video..."
                     rows={3}
-                    disabled={uploading}
+                    disabled={isUploading}
                   />
                 </div>
 
                 {/* Price */}
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Price per segment (APT)
-                  </label>
-                  <input
+                <div className="space-y-2">
+                  <Label htmlFor="price" className="flex items-center gap-2">
+                    <DollarSign className="h-4 w-4" />
+                    Price per Segment (APT)
+                  </Label>
+                  <Input
+                    id="price"
                     type="number"
                     step="0.0001"
                     min="0.0001"
                     value={price}
                     onChange={(e) => setPrice(e.target.value)}
-                    className="block w-full border rounded-lg p-2"
+                    disabled={isUploading}
                     required
-                    disabled={uploading}
                   />
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Each segment is ~5 seconds
+                  <p className="text-sm text-muted-foreground">
+                    Each segment is ~5 seconds. Minimum price: 0.0001 APT
                   </p>
                 </div>
 
                 {/* Progress */}
-                {uploading && (
-                  <div>
-                    <p className="text-sm mb-2">{stage}</p>
-                    <div className="w-full bg-secondary rounded-full h-2">
-                      <div
-                        className="bg-primary h-2 rounded-full transition-all"
-                        style={{ width: `${progress}%` }}
-                      />
+                {stage !== 'idle' && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      {stage === 'complete' ? (
+                        <CheckCircle className="h-5 w-5 text-green-500" />
+                      ) : stage === 'error' ? (
+                        <AlertCircle className="h-5 w-5 text-destructive" />
+                      ) : (
+                        <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                      )}
+                      <span className="text-sm font-medium">
+                        {STAGE_LABELS[stage]}
+                      </span>
                     </div>
+                    <Progress value={STAGE_PROGRESS[stage]} className="h-2" />
                   </div>
                 )}
 
+                {/* Error */}
+                {error && (
+                  <Alert variant="destructive">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>{error}</AlertDescription>
+                  </Alert>
+                )}
+
+                {/* Success */}
+                {stage === 'complete' && uploadedVideoId && (
+                  <Alert>
+                    <CheckCircle className="h-4 w-4" />
+                    <AlertDescription>
+                      Video uploaded successfully! Redirecting to video page...
+                    </AlertDescription>
+                  </Alert>
+                )}
+
                 {/* Submit */}
-                <Button type="submit" disabled={uploading || !file}>
-                  {uploading ? 'Uploading...' : 'Upload Video'}
-                </Button>
+                <div className="flex gap-3">
+                  <Button
+                    type="submit"
+                    disabled={isUploading || !file || stage === 'complete'}
+                    className="flex-1"
+                  >
+                    {isUploading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Uploading...
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="h-4 w-4 mr-2" />
+                        Upload Video
+                      </>
+                    )}
+                  </Button>
+
+                  {stage === 'error' && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setStage('idle');
+                        setError(null);
+                      }}
+                    >
+                      Try Again
+                    </Button>
+                  )}
+                </div>
               </form>
             </CardContent>
           </Card>
