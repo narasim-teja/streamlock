@@ -37,9 +37,7 @@ import {
   User,
   Lock,
   Unlock,
-  Key,
   Zap,
-  ArrowLeftRight,
 } from 'lucide-react';
 
 interface VideoInfo {
@@ -77,7 +75,7 @@ function formatDuration(seconds: number): string {
 }
 
 // Segment preset options for session funding
-const SEGMENT_PRESETS = [10, 20, 50, 100] as const;
+const SEGMENT_PRESETS = [1, 5, 10, 50] as const;
 
 // Create Aptos client based on network config
 function createAptosClient(): Aptos {
@@ -117,7 +115,7 @@ export default function WatchPage() {
   const sessionKeyManagerRef = useRef<SessionKeyManager | null>(null);
   const [sessionKeyState, setSessionKeyState] = useState<LiveSessionKeyState | null>(null);
   const [useSessionKey, setUseSessionKey] = useState(true); // Default to session key mode
-  const [selectedSegments, setSelectedSegments] = useState(20); // Default prepay segments
+  const [selectedSegments, setSelectedSegments] = useState(5); // Default prepay segments
   const [isReturningFunds, setIsReturningFunds] = useState(false);
 
   // Ref to track latest signer function (wallet adapters recreate this frequently)
@@ -419,7 +417,8 @@ export default function WatchPage() {
       const usdcFundingAmount = spendingLimit + usdcBuffer;
 
       // Calculate APT funding for gas (gas is always paid in APT)
-      const txGasEstimate = 100_000n * BigInt(prepaidSegments + 3); // start + segments + end + return
+      // start_session costs ~500k-1M, each segment payment ~100k, end_session ~200k
+      const txGasEstimate = 2_000_000n + (200_000n * BigInt(prepaidSegments)); // base + per-segment
 
       // Fund ephemeral account with USDC (SINGLE POPUP for USDC)
       console.log('[SessionKey] Funding ephemeral account:', ephemeralAddress);
@@ -856,7 +855,7 @@ export default function WatchPage() {
               Browse
             </Link>
             <Link href="/creator" className="text-muted-foreground hover:text-foreground">
-              Creator
+              Studio
             </Link>
             <ConnectButton />
           </nav>
@@ -923,32 +922,6 @@ export default function WatchPage() {
                       {formatUsdc(BigInt(video?.pricePerSegment || '0') * BigInt(selectedSegments))} USDC
                     </p>
 
-                    {/* Payment mode toggle */}
-                    <div className="flex items-center justify-center gap-1 mb-4">
-                      <button
-                        onClick={() => setUseSessionKey(true)}
-                        className={`flex items-center gap-1 px-3 py-1 text-xs rounded-full transition ${
-                          useSessionKey
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-white/10 hover:bg-white/20'
-                        }`}
-                      >
-                        <Zap className="h-3 w-3" />
-                        Quick Pay
-                      </button>
-                      <button
-                        onClick={() => setUseSessionKey(false)}
-                        className={`flex items-center gap-1 px-3 py-1 text-xs rounded-full transition ${
-                          !useSessionKey
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-white/10 hover:bg-white/20'
-                        }`}
-                      >
-                        <Wallet className="h-3 w-3" />
-                        Manual
-                      </button>
-                    </div>
-
                     {/* Start button */}
                     <Button
                       size="lg"
@@ -959,7 +932,7 @@ export default function WatchPage() {
                       {sessionLoading ? (
                         <>
                           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          {useSessionKey ? 'Funding...' : 'Starting...'}
+                          Starting...
                         </>
                       ) : (
                         <>
@@ -1094,76 +1067,10 @@ export default function WatchPage() {
                       </Button>
                     </div>
 
-                    {/* Session Key Status (when using popup-free mode) */}
-                    {sessionKeyState && (
-                      <>
-                        <Separator />
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2 text-sm font-medium">
-                            <Key className="h-4 w-4 text-primary" />
-                            Session Key Active
-                          </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Key Balance</span>
-                            <span className="font-semibold text-green-600">
-                              {formatUsdc(sessionKeyState.currentBalance)} USDC
-                            </span>
-                          </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Segments Affordable</span>
-                            <span className="font-semibold">
-                              ~{video ? Math.floor(Number(sessionKeyState.currentBalance) / (Number(video.pricePerSegment) + 100_000)) : 0}
-                            </span>
-                          </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Spent on Segments</span>
-                            <span className="font-mono text-xs">
-                              {formatUsdc(sessionKeyState.segmentSpend)} USDC
-                            </span>
-                          </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Spent on Gas</span>
-                            <span className="font-mono text-xs">
-                              {formatUsdc(sessionKeyState.gasSpend)} USDC
-                            </span>
-                          </div>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="w-full mt-2"
-                            onClick={handleReturnFunds}
-                            disabled={isReturningFunds || sessionKeyState.currentBalance <= 100_000n}
-                          >
-                            {isReturningFunds ? (
-                              <>
-                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                                Returning...
-                              </>
-                            ) : (
-                              <>
-                                <ArrowLeftRight className="h-3 w-3 mr-1" />
-                                Return Remaining Funds
-                              </>
-                            )}
-                          </Button>
-                        </div>
-                      </>
-                    )}
-
                     {/* Low balance warning */}
-                    {remainingSegments < 5 && (
+                    {remainingSegments < 5 && remainingSegments > 0 && (
                       <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-sm text-amber-600">
                         Low balance! Top up to continue watching.
-                      </div>
-                    )}
-
-                    {/* Session key low balance warning */}
-                    {sessionKeyState && video && (
-                      Math.floor(Number(sessionKeyState.currentBalance) / (Number(video.pricePerSegment) + 100_000)) < 3
-                    ) && (
-                      <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-sm text-amber-600">
-                        <Key className="h-3 w-3 inline mr-1" />
-                        Session key running low! End session to return remaining funds.
                       </div>
                     )}
                   </>
