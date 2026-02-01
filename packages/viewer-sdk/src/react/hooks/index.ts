@@ -7,3 +7,4 @@ export * from './usePayment.js';
 export * from './usePlayback.js';
 export * from './useWalletSession.js';
 export * from './useStreamLockPlayer.js';
+export * from './useSessionKeySession.js';

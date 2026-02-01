@@ -5,7 +5,8 @@ import { useParams } from 'next/navigation';
 import { useWallet } from '@aptos-labs/wallet-adapter-react';
 import Link from 'next/link';
 import Hls from 'hls.js';
-import { Aptos, AptosConfig, Network } from '@aptos-labs/ts-sdk';
+import { Aptos, AptosConfig, Network, Account } from '@aptos-labs/ts-sdk';
+import type { SignAndSubmitTransactionFunction } from '@streamlock/viewer-sdk';
 import { ConnectButton } from '@/components/wallet/ConnectButton';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -15,7 +16,13 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/Separator';
 import { formatApt, truncateAddress } from '@streamlock/common';
-import { X402KeyLoader, createX402LoaderClass } from '@streamlock/viewer-sdk';
+import {
+  X402KeyLoader,
+  createX402LoaderClass,
+  SessionKeyManager,
+  BrowserSessionKeyStorage,
+} from '@streamlock/viewer-sdk';
+import type { LiveSessionKeyState } from '@streamlock/viewer-sdk';
 import { config } from '@/lib/config';
 import {
   Play,
@@ -29,6 +36,9 @@ import {
   User,
   Lock,
   Unlock,
+  Key,
+  Zap,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 interface VideoInfo {
@@ -99,6 +109,12 @@ export default function WatchPage() {
   const [currentKeySegment, setCurrentKeySegment] = useState<number | null>(null);
   const [isLoadingKey, setIsLoadingKey] = useState(false);
 
+  // Session key state (for popup-free playback)
+  const sessionKeyManagerRef = useRef<SessionKeyManager | null>(null);
+  const [sessionKeyState, setSessionKeyState] = useState<LiveSessionKeyState | null>(null);
+  const [useSessionKey, setUseSessionKey] = useState(true); // Default to session key mode
+  const [isReturningFunds, setIsReturningFunds] = useState(false);
+
   // Ref to track latest signer function (wallet adapters recreate this frequently)
   // This prevents HLS player from being destroyed when signAndSubmitTransaction changes
   const signerRef = useRef<typeof signAndSubmitTransaction | null>(null);
@@ -146,8 +162,12 @@ export default function WatchPage() {
     const currentSigner = signerRef.current;
     const currentSession = sessionRef.current;
     const currentVideo = videoMetaRef.current;
+    const sessionKeyManager = sessionKeyManagerRef.current;
 
-    if (!currentSession || !currentVideo || !videoRef.current || !currentSigner || !accountAddressStr) return;
+    // Check if we have a valid signer (either wallet or session key)
+    const hasSessionKey = sessionKeyManager?.isActive() && sessionKeyManager.getAccount();
+    if (!currentSession || !currentVideo || !videoRef.current || !accountAddressStr) return;
+    if (!hasSessionKey && !currentSigner) return;
 
     const videoEl = videoRef.current;
 
@@ -168,16 +188,26 @@ export default function WatchPage() {
       // Create Aptos client
       const aptosClient = createAptosClient();
 
-      // Create a stable signer wrapper that reads from ref at call time
-      // This ensures we always use the latest signer function even if it gets recreated
-      const signerWrapper = async (payload: Parameters<NonNullable<typeof signAndSubmitTransaction>>[0]['data']) => {
-        const signer = signerRef.current;
-        if (!signer) {
-          throw new Error('Wallet not connected');
-        }
-        const result = await signer({ data: payload });
-        return result;
-      };
+      // Determine signer: use session key account if available, otherwise wallet adapter
+      let signer: Account | SignAndSubmitTransactionFunction;
+      let signerAddress: string;
+
+      if (hasSessionKey) {
+        // Use session key account (NO POPUPS for payments)
+        signer = sessionKeyManager!.getAccount()!;
+        signerAddress = sessionKeyManager!.getAddress()!;
+      } else {
+        // Use wallet adapter (popup per payment)
+        signer = async (payload: Parameters<NonNullable<typeof signAndSubmitTransaction>>[0]['data']) => {
+          const walletSigner = signerRef.current;
+          if (!walletSigner) {
+            throw new Error('Wallet not connected');
+          }
+          const result = await walletSigner({ data: payload });
+          return result;
+        };
+        signerAddress = accountAddressStr!;
+      }
 
       // Create key loader for x402 payment flow
       const keyLoader = new X402KeyLoader({
@@ -187,9 +217,14 @@ export default function WatchPage() {
         localVideoId: currentVideo.videoId,
         aptosClient,
         contractAddress: config.contractAddress,
-        accountAddress: accountAddressStr!,
-        signer: signerWrapper,
+        accountAddress: signerAddress,
+        signer,
         onPayment: (segmentIndex, txHash, amount) => {
+          // Update session key state balance if using session key
+          if (sessionKeyManagerRef.current?.isActive()) {
+            sessionKeyManagerRef.current.recordPayment(amount, 100_000n);
+            setSessionKeyState(sessionKeyManagerRef.current.getState());
+          }
           setPayments(prev => {
             if (prev.some(p => p.segmentIndex === segmentIndex)) {
               return prev;
@@ -307,8 +342,177 @@ export default function WatchPage() {
     // Only re-attach when session presence changes (null ↔ active)
   }, [!!session]);
 
-  // Start session
-  const handleStartSession = useCallback(async () => {
+  // Get account balance helper - uses view function for Fungible Asset balance
+  const getAccountBalance = useCallback(async (address: string, retries = 3): Promise<bigint> => {
+    const aptosClient = createAptosClient();
+
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        // Use primary_fungible_store::balance view function for FA-based APT
+        const result = await aptosClient.view({
+          payload: {
+            function: '0x1::primary_fungible_store::balance',
+            typeArguments: ['0x1::fungible_asset::Metadata'],
+            functionArguments: [address, '0xa'], // 0xa is APT metadata object
+          },
+        });
+        const balance = BigInt(result[0] as string);
+        console.log('[getAccountBalance] FA balance for', address, ':', balance.toString());
+        return balance;
+      } catch (err) {
+        // If account not found or no balance, try legacy coin store
+        try {
+          const balance = await aptosClient.getAccountAPTAmount({
+            accountAddress: address,
+          });
+          console.log('[getAccountBalance] Coin balance for', address, ':', balance);
+          return BigInt(balance);
+        } catch {
+          // Account may not exist yet, retry
+          if (attempt < retries - 1) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            continue;
+          }
+          console.warn('Failed to get account balance:', err);
+          return 0n;
+        }
+      }
+    }
+    return 0n;
+  }, []);
+
+  // Start session with session key (popup-free after initial funding)
+  const handleStartSessionWithKey = useCallback(async () => {
+    const currentSigner = signerRef.current;
+    if (!video || !account?.address || !currentSigner) return;
+
+    setSessionLoading(true);
+    setError(null);
+
+    try {
+      if (!video.onChainVideoId) {
+        throw new Error('This video is not yet registered on the blockchain.');
+      }
+
+      const aptosClient = createAptosClient();
+      const prepaidSegments = 20;
+      const spendingLimit = BigInt(video.pricePerSegment) * BigInt(prepaidSegments);
+
+      // Create session key manager with browser storage
+      const storage = new BrowserSessionKeyStorage();
+      const manager = new SessionKeyManager(storage);
+      sessionKeyManagerRef.current = manager;
+
+      // Generate ephemeral keypair
+      const ephemeralAccount = manager.generate();
+      const ephemeralAddress = ephemeralAccount.accountAddress.toString();
+
+      // Calculate funding amount (spending limit + 20% gas buffer)
+      const gasBuffer = (spendingLimit * 20n) / 100n;
+      const txGasEstimate = 100_000n * BigInt(prepaidSegments + 3); // start + segments + end + return
+      const fundingAmount = spendingLimit + gasBuffer + txGasEstimate;
+
+      // Fund ephemeral account (SINGLE POPUP)
+      console.log('[SessionKey] Funding ephemeral account:', ephemeralAddress);
+      console.log('[SessionKey] Funding amount:', fundingAmount.toString(), 'octas');
+
+      const fundPayload = {
+        function: '0x1::aptos_account::transfer' as `${string}::${string}::${string}`,
+        functionArguments: [ephemeralAddress, fundingAmount.toString()],
+      };
+
+      const fundTx = await currentSigner({ data: fundPayload });
+      console.log('[SessionKey] Fund tx submitted:', fundTx.hash);
+
+      const txResult = await aptosClient.waitForTransaction({ transactionHash: fundTx.hash });
+      console.log('[SessionKey] Fund tx confirmed:', txResult.success);
+
+      if (!txResult.success) {
+        throw new Error(`Funding transaction failed: ${fundTx.hash}`);
+      }
+
+      // Initialize manager state
+      manager.initialize(account.address.toString(), spendingLimit);
+
+      // Fetch balance (with retries for new accounts)
+      const balance = await getAccountBalance(ephemeralAddress);
+      console.log('[SessionKey] Ephemeral balance after funding:', balance.toString());
+
+      if (balance === 0n) {
+        // Double-check via direct API call
+        const directBalance = await aptosClient.getAccountAPTAmount({ accountAddress: ephemeralAddress });
+        console.log('[SessionKey] Direct balance check:', directBalance);
+
+        if (directBalance === 0) {
+          throw new Error(`Funding failed - ephemeral account has 0 balance. Check tx: ${fundTx.hash}`);
+        }
+        manager.setBalance(BigInt(directBalance));
+      } else {
+        manager.setBalance(balance);
+      }
+
+      // Import StreamLockContract to start session with ephemeral account
+      const { createStreamLockContract } = await import('@streamlock/aptos');
+      const contract = createStreamLockContract(aptosClient, {
+        address: config.contractAddress,
+        moduleName: 'protocol',
+      });
+
+      // Create session using ephemeral account (NO POPUP)
+      const result = await contract.startSession(ephemeralAccount, {
+        videoId: BigInt(video.onChainVideoId),
+        prepaidSegments,
+        maxDurationSeconds: 7200,
+      });
+
+      // Get transaction to extract events
+      const fullTx = await aptosClient.getTransactionByHash({
+        transactionHash: result.hash,
+      });
+
+      const events = 'events' in fullTx ? fullTx.events : [];
+      const sessionEvent = events.find((e: { type: string }) =>
+        e.type.includes('SessionStartedEvent')
+      );
+
+      if (!sessionEvent) {
+        throw new Error('Session creation failed - no session event found');
+      }
+
+      const sessionData = sessionEvent.data as {
+        session_id: string;
+        video_id: string;
+        prepaid_amount: string;
+      };
+
+      const newSession = {
+        sessionId: BigInt(sessionData.session_id),
+        videoId: BigInt(sessionData.video_id),
+        prepaidBalance: BigInt(sessionData.prepaid_amount),
+        segmentsPaid: 0,
+        isActive: true,
+      };
+
+      // Update manager with session info
+      manager.setSessionInfo(newSession.sessionId, newSession.videoId);
+
+      setSession(newSession);
+      setSessionKeyState(manager.getState());
+
+    } catch (err) {
+      // Cleanup on error
+      if (sessionKeyManagerRef.current) {
+        sessionKeyManagerRef.current.destroy();
+        sessionKeyManagerRef.current = null;
+      }
+      setError(err instanceof Error ? err.message : 'Failed to start session. Please try again.');
+    } finally {
+      setSessionLoading(false);
+    }
+  }, [video, account, getAccountBalance]);
+
+  // Start session with wallet signing (original flow, popup per segment)
+  const handleStartSessionWithWallet = useCallback(async () => {
     const currentSigner = signerRef.current;
     if (!video || !account?.address || !currentSigner) return;
 
@@ -378,6 +582,15 @@ export default function WatchPage() {
     // Note: signAndSubmitTransaction accessed via signerRef to avoid unstable dependency
   }, [video, account]);
 
+  // Start session (delegates based on mode)
+  const handleStartSession = useCallback(async () => {
+    if (useSessionKey) {
+      await handleStartSessionWithKey();
+    } else {
+      await handleStartSessionWithWallet();
+    }
+  }, [useSessionKey, handleStartSessionWithKey, handleStartSessionWithWallet]);
+
   // Top up session
   const handleTopUp = useCallback(async () => {
     const currentSigner = signerRef.current;
@@ -424,24 +637,118 @@ export default function WatchPage() {
     // Note: signAndSubmitTransaction accessed via signerRef to avoid unstable dependency
   }, [session, video]);
 
+  // Return session key funds to main wallet
+  const handleReturnFunds = useCallback(async () => {
+    const manager = sessionKeyManagerRef.current;
+    const account = manager?.getAccount();
+    const state = manager?.getState();
+
+    if (!manager?.isActive() || !account || !state) {
+      return null;
+    }
+
+    setIsReturningFunds(true);
+
+    try {
+      const aptosClient = createAptosClient();
+
+      // Get current balance
+      const currentBalance = await getAccountBalance(state.address);
+      if (currentBalance <= 0n) {
+        return null;
+      }
+
+      // Estimate gas for transfer (10k gas units * 100 gas price = 1M octas max)
+      const maxGasAmount = 10000;
+      const gasUnitPrice = 100;
+      const estimatedGas = BigInt(maxGasAmount * gasUnitPrice);
+      const transferAmount = currentBalance - estimatedGas;
+
+      if (transferAmount <= 0n) {
+        console.log('[ReturnFunds] Balance too low to cover gas:', currentBalance.toString());
+        return null;
+      }
+
+      console.log('[ReturnFunds] Transferring', transferAmount.toString(), 'octas back to', state.fundingWallet);
+
+      // Transfer back to main wallet with explicit gas limit
+      const txn = await aptosClient.transaction.build.simple({
+        sender: account.accountAddress,
+        data: {
+          function: '0x1::aptos_account::transfer',
+          functionArguments: [state.fundingWallet, transferAmount.toString()],
+        },
+        options: {
+          maxGasAmount,
+          gasUnitPrice,
+        },
+      });
+
+      const pendingTxn = await aptosClient.signAndSubmitTransaction({
+        signer: account,
+        transaction: txn,
+      });
+
+      await aptosClient.waitForTransaction({
+        transactionHash: pendingTxn.hash,
+      });
+
+      return pendingTxn.hash;
+    } catch (err) {
+      console.error('Failed to return funds:', err);
+      return null;
+    } finally {
+      setIsReturningFunds(false);
+    }
+  }, [getAccountBalance]);
+
   // End session
   const handleEndSession = useCallback(async () => {
     if (!session) return;
 
     setSessionLoading(true);
     try {
-      // End on-chain session if applicable
-      const currentSigner = signerRef.current;
-      if (video?.onChainVideoId && session.sessionId > 0n && currentSigner) {
+      const aptosClient = createAptosClient();
+      const sessionKeyManager = sessionKeyManagerRef.current;
+      const sessionKeyAccount = sessionKeyManager?.getAccount();
+
+      // End on-chain session
+      if (video?.onChainVideoId && session.sessionId > 0n) {
         try {
-          const payload = {
-            function: `${config.contractAddress}::protocol::end_session` as `${string}::${string}::${string}`,
-            functionArguments: [session.sessionId.toString()],
-          };
-          await currentSigner({ data: payload });
+          if (sessionKeyAccount) {
+            // Use session key to end session (no popup)
+            const { createStreamLockContract } = await import('@streamlock/aptos');
+            const contract = createStreamLockContract(aptosClient, {
+              address: config.contractAddress,
+              moduleName: 'protocol',
+            });
+            await contract.endSession(sessionKeyAccount, session.sessionId);
+          } else {
+            // Use wallet adapter (popup)
+            const currentSigner = signerRef.current;
+            if (currentSigner) {
+              const payload = {
+                function: `${config.contractAddress}::protocol::end_session` as `${string}::${string}::${string}`,
+                functionArguments: [session.sessionId.toString()],
+              };
+              await currentSigner({ data: payload });
+            }
+          }
         } catch {
           // Continue with cleanup even if on-chain fails
         }
+      }
+
+      // Return remaining funds from session key if active
+      if (sessionKeyManager?.isActive()) {
+        try {
+          await handleReturnFunds();
+        } catch {
+          // Continue cleanup even if return fails
+        }
+        sessionKeyManager.destroy();
+        sessionKeyManagerRef.current = null;
+        setSessionKeyState(null);
       }
 
       // Cleanup HLS
@@ -472,7 +779,7 @@ export default function WatchPage() {
       setSessionLoading(false);
     }
     // Note: signAndSubmitTransaction accessed via signerRef to avoid unstable dependency
-  }, [session, video]);
+  }, [session, video, handleReturnFunds]);
 
   // Calculate current segment based on time (5 seconds per segment)
   const currentSegment = video ? Math.floor(currentTime / 5) : 0;
@@ -576,12 +883,45 @@ export default function WatchPage() {
                       className="absolute inset-0 w-full h-full object-cover opacity-30"
                     />
                   )}
-                  <div className="relative z-10 text-center">
+                  <div className="relative z-10 text-center max-w-md px-4">
                     <Play className="h-16 w-16 mx-auto mb-4 opacity-75" />
                     <p className="mb-2 text-lg">Start a session to watch</p>
                     <p className="text-sm text-gray-400 mb-4">
                       Prepay for 20 segments (~{formatApt(BigInt(video?.pricePerSegment || '0') * 20n)} APT)
                     </p>
+
+                    {/* Session mode toggle */}
+                    <div className="flex items-center justify-center gap-2 mb-4 text-sm">
+                      <button
+                        onClick={() => setUseSessionKey(true)}
+                        className={`flex items-center gap-1 px-3 py-1.5 rounded-full transition ${
+                          useSessionKey
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-white/10 hover:bg-white/20'
+                        }`}
+                      >
+                        <Zap className="h-3 w-3" />
+                        Popup-Free
+                      </button>
+                      <button
+                        onClick={() => setUseSessionKey(false)}
+                        className={`flex items-center gap-1 px-3 py-1.5 rounded-full transition ${
+                          !useSessionKey
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-white/10 hover:bg-white/20'
+                        }`}
+                      >
+                        <Wallet className="h-3 w-3" />
+                        Wallet Sign
+                      </button>
+                    </div>
+
+                    {useSessionKey && (
+                      <p className="text-xs text-gray-500 mb-4">
+                        One approval to fund session. No popups during playback.
+                      </p>
+                    )}
+
                     <Button
                       size="lg"
                       onClick={handleStartSession}
@@ -590,12 +930,12 @@ export default function WatchPage() {
                       {sessionLoading ? (
                         <>
                           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          Starting...
+                          {useSessionKey ? 'Funding Session Key...' : 'Starting...'}
                         </>
                       ) : (
                         <>
-                          <Play className="h-4 w-4 mr-2" />
-                          Start Session
+                          {useSessionKey ? <Key className="h-4 w-4 mr-2" /> : <Play className="h-4 w-4 mr-2" />}
+                          {useSessionKey ? 'Start (Single Approval)' : 'Start Session'}
                         </>
                       )}
                     </Button>
@@ -653,7 +993,15 @@ export default function WatchPage() {
             {/* Session Info */}
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Session</CardTitle>
+                <CardTitle className="text-lg flex items-center justify-between">
+                  <span>Session</span>
+                  {sessionKeyState && (
+                    <Badge variant="secondary" className="text-xs">
+                      <Zap className="h-3 w-3 mr-1" />
+                      Popup-Free
+                    </Badge>
+                  )}
+                </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 {session ? (
@@ -717,10 +1065,76 @@ export default function WatchPage() {
                       </Button>
                     </div>
 
+                    {/* Session Key Status (when using popup-free mode) */}
+                    {sessionKeyState && (
+                      <>
+                        <Separator />
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2 text-sm font-medium">
+                            <Key className="h-4 w-4 text-primary" />
+                            Session Key Active
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Key Balance</span>
+                            <span className="font-semibold text-green-600">
+                              {formatApt(sessionKeyState.currentBalance)} APT
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Segments Affordable</span>
+                            <span className="font-semibold">
+                              ~{video ? Math.floor(Number(sessionKeyState.currentBalance) / (Number(video.pricePerSegment) + 100_000)) : 0}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Spent on Segments</span>
+                            <span className="font-mono text-xs">
+                              {formatApt(sessionKeyState.segmentSpend)} APT
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Spent on Gas</span>
+                            <span className="font-mono text-xs">
+                              {formatApt(sessionKeyState.gasSpend)} APT
+                            </span>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-full mt-2"
+                            onClick={handleReturnFunds}
+                            disabled={isReturningFunds || sessionKeyState.currentBalance <= 100_000n}
+                          >
+                            {isReturningFunds ? (
+                              <>
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                Returning...
+                              </>
+                            ) : (
+                              <>
+                                <ArrowLeftRight className="h-3 w-3 mr-1" />
+                                Return Remaining Funds
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                      </>
+                    )}
+
                     {/* Low balance warning */}
                     {remainingSegments < 5 && (
                       <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-sm text-amber-600">
                         Low balance! Top up to continue watching.
+                      </div>
+                    )}
+
+                    {/* Session key low balance warning */}
+                    {sessionKeyState && video && (
+                      Math.floor(Number(sessionKeyState.currentBalance) / (Number(video.pricePerSegment) + 100_000)) < 3
+                    ) && (
+                      <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-sm text-amber-600">
+                        <Key className="h-3 w-3 inline mr-1" />
+                        Session key running low! End session to return remaining funds.
                       </div>
                     )}
                   </>

@@ -44,11 +44,15 @@ export class StreamLockContract {
   /** Execute a transaction */
   private async executeTransaction(
     signer: Account,
-    payload: InputGenerateTransactionPayloadData
+    payload: InputGenerateTransactionPayloadData,
+    options?: { maxGasAmount?: number }
   ): Promise<TransactionResult> {
     const transaction = await this.client.transaction.build.simple({
       sender: signer.accountAddress,
       data: payload,
+      options: {
+        maxGasAmount: options?.maxGasAmount ?? 10000, // Default to 10k gas units (reasonable for most ops)
+      },
     });
 
     const pendingTxn = await this.client.signAndSubmitTransaction({
