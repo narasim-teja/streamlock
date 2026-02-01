@@ -26,6 +26,30 @@ import { parseTransactionEvents } from './events.js';
 
 const MODULE_NAME = 'protocol';
 
+/** USDC Fungible Asset metadata address on Aptos Testnet */
+export const USDC_METADATA_ADDRESS = '0x69091fbab5f7d635ee7ac5098cf0c1efbe31d68fec0f2cd565e8d168daf52832';
+
+/** USDC decimals (6 decimals = 1 USDC = 1,000,000 units) */
+export const USDC_DECIMALS = 6;
+
+/** Convert USDC amount to human readable format */
+export function formatUsdc(amount: bigint): string {
+  const divisor = BigInt(10 ** USDC_DECIMALS);
+  const whole = amount / divisor;
+  const fraction = amount % divisor;
+  const fractionStr = fraction.toString().padStart(USDC_DECIMALS, '0');
+  // Trim trailing zeros but keep at least 2 decimal places
+  const trimmed = fractionStr.replace(/0+$/, '').padEnd(2, '0');
+  return `${whole}.${trimmed}`;
+}
+
+/** Convert human readable USDC to base units */
+export function parseUsdc(amount: string): bigint {
+  const [whole, fraction = ''] = amount.split('.');
+  const paddedFraction = fraction.slice(0, USDC_DECIMALS).padEnd(USDC_DECIMALS, '0');
+  return BigInt(whole) * BigInt(10 ** USDC_DECIMALS) + BigInt(paddedFraction);
+}
+
 /** StreamLock contract client */
 export class StreamLockContract {
   private client: Aptos;
@@ -412,6 +436,34 @@ export class StreamLockContract {
     });
 
     return BigInt(result[0] as string);
+  }
+
+  /** Get USDC balance for an address */
+  async getUsdcBalance(address: string): Promise<bigint> {
+    try {
+      const result = await this.client.view({
+        payload: {
+          function: '0x1::primary_fungible_store::balance',
+          typeArguments: ['0x1::fungible_asset::Metadata'],
+          functionArguments: [address, USDC_METADATA_ADDRESS],
+        },
+      });
+      return BigInt(result[0] as string);
+    } catch {
+      // Account may not have a USDC store yet
+      return 0n;
+    }
+  }
+
+  /** Get USDC metadata address from contract */
+  async getUsdcMetadataAddress(): Promise<string> {
+    const result = await this.client.view({
+      payload: {
+        function: this.functionId('get_usdc_metadata_address'),
+        functionArguments: [],
+      },
+    });
+    return result[0] as string;
   }
 
   // ============ Gas Estimation ============

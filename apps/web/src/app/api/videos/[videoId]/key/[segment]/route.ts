@@ -10,7 +10,14 @@ import {
   deserializeMerkleTree,
   generateMerkleProof,
 } from '@streamlock/crypto';
-import { X402_VERSION, APTOS_COIN } from '@streamlock/common';
+import { X402_VERSION } from '@streamlock/common';
+
+/** USDC Fungible Asset metadata addresses */
+const USDC_METADATA: Record<string, string> = {
+  testnet: '0x69091fbab5f7d635ee7ac5098cf0c1efbe31d68fec0f2cd565e8d168daf52832',
+  mainnet: '0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b',
+  devnet: '0x69091fbab5f7d635ee7ac5098cf0c1efbe31d68fec0f2cd565e8d168daf52832', // Same as testnet
+};
 import { Aptos, AptosConfig, Network } from '@aptos-labs/ts-sdk';
 
 /**
@@ -106,9 +113,10 @@ export async function GET(
     const paymentHeader = request.headers.get('X-Payment');
 
     if (!paymentHeader) {
-      // Return 402 with payment instructions
+      // Return 402 with payment instructions (USDC payment)
       const contractAddress = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
       const network = process.env.NEXT_PUBLIC_APTOS_NETWORK || 'testnet';
+      const usdcMetadata = USDC_METADATA[network] || USDC_METADATA.testnet;
 
       return NextResponse.json(
         {
@@ -118,7 +126,7 @@ export async function GET(
               scheme: 'exact',
               network: `aptos-${network}`,
               maxAmountRequired: video.pricePerSegment.toString(),
-              resource: APTOS_COIN,
+              resource: usdcMetadata, // USDC Fungible Asset metadata address
               payTo: video.creatorAddress,
               extra: {
                 videoId,
@@ -126,6 +134,7 @@ export async function GET(
                 sessionId: '', // Client should fill this
                 contractAddress,
                 function: `${contractAddress}::protocol::pay_for_segment`,
+                token: 'USDC',
               },
             },
           ],

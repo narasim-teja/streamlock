@@ -15,13 +15,14 @@ import { Progress } from '@/components/ui/Progress';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/Separator';
-import { formatApt, truncateAddress } from '@streamlock/common';
+import { truncateAddress } from '@streamlock/common';
 import {
   X402KeyLoader,
   createX402LoaderClass,
   SessionKeyManager,
   BrowserSessionKeyStorage,
 } from '@streamlock/viewer-sdk';
+import { formatUsdc, USDC_METADATA_ADDRESS, USDC_DECIMALS } from '@streamlock/aptos';
 import type { LiveSessionKeyState } from '@streamlock/viewer-sdk';
 import { config } from '@/lib/config';
 import {
@@ -75,6 +76,9 @@ function formatDuration(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
+// Segment preset options for session funding
+const SEGMENT_PRESETS = [10, 20, 50, 100] as const;
+
 // Create Aptos client based on network config
 function createAptosClient(): Aptos {
   const network = config.aptosNetwork === 'mainnet' ? Network.MAINNET :
@@ -113,6 +117,7 @@ export default function WatchPage() {
   const sessionKeyManagerRef = useRef<SessionKeyManager | null>(null);
   const [sessionKeyState, setSessionKeyState] = useState<LiveSessionKeyState | null>(null);
   const [useSessionKey, setUseSessionKey] = useState(true); // Default to session key mode
+  const [selectedSegments, setSelectedSegments] = useState(20); // Default prepay segments
   const [isReturningFunds, setIsReturningFunds] = useState(false);
 
   // Ref to track latest signer function (wallet adapters recreate this frequently)
@@ -342,43 +347,45 @@ export default function WatchPage() {
     // Only re-attach when session presence changes (null ↔ active)
   }, [!!session]);
 
-  // Get account balance helper - uses view function for Fungible Asset balance
-  const getAccountBalance = useCallback(async (address: string, retries = 3): Promise<bigint> => {
+  // Get USDC balance helper - uses view function for Fungible Asset balance
+  const getUsdcBalance = useCallback(async (address: string, retries = 3): Promise<bigint> => {
     const aptosClient = createAptosClient();
 
     for (let attempt = 0; attempt < retries; attempt++) {
       try {
-        // Use primary_fungible_store::balance view function for FA-based APT
+        // Use primary_fungible_store::balance view function for USDC (FA standard)
         const result = await aptosClient.view({
           payload: {
             function: '0x1::primary_fungible_store::balance',
             typeArguments: ['0x1::fungible_asset::Metadata'],
-            functionArguments: [address, '0xa'], // 0xa is APT metadata object
+            functionArguments: [address, USDC_METADATA_ADDRESS],
           },
         });
         const balance = BigInt(result[0] as string);
-        console.log('[getAccountBalance] FA balance for', address, ':', balance.toString());
+        console.log('[getUsdcBalance] USDC balance for', address, ':', balance.toString());
         return balance;
       } catch (err) {
-        // If account not found or no balance, try legacy coin store
-        try {
-          const balance = await aptosClient.getAccountAPTAmount({
-            accountAddress: address,
-          });
-          console.log('[getAccountBalance] Coin balance for', address, ':', balance);
-          return BigInt(balance);
-        } catch {
-          // Account may not exist yet, retry
-          if (attempt < retries - 1) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            continue;
-          }
-          console.warn('Failed to get account balance:', err);
-          return 0n;
+        // Account may not have USDC store yet, retry
+        if (attempt < retries - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          continue;
         }
+        console.warn('Failed to get USDC balance:', err);
+        return 0n;
       }
     }
     return 0n;
+  }, []);
+
+  // Get APT balance for gas - still needed for gas payments
+  const getAptBalance = useCallback(async (address: string): Promise<bigint> => {
+    const aptosClient = createAptosClient();
+    try {
+      const balance = await aptosClient.getAccountAPTAmount({ accountAddress: address });
+      return BigInt(balance);
+    } catch {
+      return 0n;
+    }
   }, []);
 
   // Start session with session key (popup-free after initial funding)
@@ -395,7 +402,7 @@ export default function WatchPage() {
       }
 
       const aptosClient = createAptosClient();
-      const prepaidSegments = 20;
+      const prepaidSegments = selectedSegments;
       const spendingLimit = BigInt(video.pricePerSegment) * BigInt(prepaidSegments);
 
       // Create session key manager with browser storage
@@ -407,49 +414,62 @@ export default function WatchPage() {
       const ephemeralAccount = manager.generate();
       const ephemeralAddress = ephemeralAccount.accountAddress.toString();
 
-      // Calculate funding amount (spending limit + 20% gas buffer)
-      const gasBuffer = (spendingLimit * 20n) / 100n;
+      // Calculate USDC funding amount (spending limit + 20% buffer for contract interaction fees)
+      const usdcBuffer = (spendingLimit * 20n) / 100n;
+      const usdcFundingAmount = spendingLimit + usdcBuffer;
+
+      // Calculate APT funding for gas (gas is always paid in APT)
       const txGasEstimate = 100_000n * BigInt(prepaidSegments + 3); // start + segments + end + return
-      const fundingAmount = spendingLimit + gasBuffer + txGasEstimate;
 
-      // Fund ephemeral account (SINGLE POPUP)
+      // Fund ephemeral account with USDC (SINGLE POPUP for USDC)
       console.log('[SessionKey] Funding ephemeral account:', ephemeralAddress);
-      console.log('[SessionKey] Funding amount:', fundingAmount.toString(), 'octas');
+      console.log('[SessionKey] USDC funding amount:', usdcFundingAmount.toString(), 'micro-USDC');
+      console.log('[SessionKey] APT gas funding:', txGasEstimate.toString(), 'octas');
 
-      const fundPayload = {
-        function: '0x1::aptos_account::transfer' as `${string}::${string}::${string}`,
-        functionArguments: [ephemeralAddress, fundingAmount.toString()],
+      // Transfer USDC using FA standard
+      const fundUsdcPayload = {
+        function: '0x1::primary_fungible_store::transfer' as `${string}::${string}::${string}`,
+        typeArguments: ['0x1::fungible_asset::Metadata'],
+        functionArguments: [USDC_METADATA_ADDRESS, ephemeralAddress, usdcFundingAmount.toString()],
       };
 
-      const fundTx = await currentSigner({ data: fundPayload });
-      console.log('[SessionKey] Fund tx submitted:', fundTx.hash);
+      const fundUsdcTx = await currentSigner({ data: fundUsdcPayload });
+      console.log('[SessionKey] USDC fund tx submitted:', fundUsdcTx.hash);
 
-      const txResult = await aptosClient.waitForTransaction({ transactionHash: fundTx.hash });
-      console.log('[SessionKey] Fund tx confirmed:', txResult.success);
+      const usdcTxResult = await aptosClient.waitForTransaction({ transactionHash: fundUsdcTx.hash });
+      console.log('[SessionKey] USDC fund tx confirmed:', usdcTxResult.success);
 
-      if (!txResult.success) {
-        throw new Error(`Funding transaction failed: ${fundTx.hash}`);
+      if (!usdcTxResult.success) {
+        throw new Error(`USDC funding transaction failed: ${fundUsdcTx.hash}`);
+      }
+
+      // Transfer APT for gas (SECOND POPUP for APT gas)
+      const fundAptPayload = {
+        function: '0x1::aptos_account::transfer' as `${string}::${string}::${string}`,
+        functionArguments: [ephemeralAddress, txGasEstimate.toString()],
+      };
+
+      const fundAptTx = await currentSigner({ data: fundAptPayload });
+      console.log('[SessionKey] APT gas fund tx submitted:', fundAptTx.hash);
+
+      const aptTxResult = await aptosClient.waitForTransaction({ transactionHash: fundAptTx.hash });
+      console.log('[SessionKey] APT gas fund tx confirmed:', aptTxResult.success);
+
+      if (!aptTxResult.success) {
+        throw new Error(`APT gas funding transaction failed: ${fundAptTx.hash}`);
       }
 
       // Initialize manager state
       manager.initialize(account.address.toString(), spendingLimit);
 
-      // Fetch balance (with retries for new accounts)
-      const balance = await getAccountBalance(ephemeralAddress);
-      console.log('[SessionKey] Ephemeral balance after funding:', balance.toString());
+      // Fetch USDC balance (with retries for new accounts)
+      const usdcBalance = await getUsdcBalance(ephemeralAddress);
+      console.log('[SessionKey] Ephemeral USDC balance after funding:', usdcBalance.toString());
 
-      if (balance === 0n) {
-        // Double-check via direct API call
-        const directBalance = await aptosClient.getAccountAPTAmount({ accountAddress: ephemeralAddress });
-        console.log('[SessionKey] Direct balance check:', directBalance);
-
-        if (directBalance === 0) {
-          throw new Error(`Funding failed - ephemeral account has 0 balance. Check tx: ${fundTx.hash}`);
-        }
-        manager.setBalance(BigInt(directBalance));
-      } else {
-        manager.setBalance(balance);
+      if (usdcBalance === 0n) {
+        throw new Error(`USDC funding failed - ephemeral account has 0 USDC balance. Check tx: ${fundUsdcTx.hash}`);
       }
+      manager.setBalance(usdcBalance);
 
       // Import StreamLockContract to start session with ephemeral account
       const { createStreamLockContract } = await import('@streamlock/aptos');
@@ -509,7 +529,7 @@ export default function WatchPage() {
     } finally {
       setSessionLoading(false);
     }
-  }, [video, account, getAccountBalance]);
+  }, [video, account, getUsdcBalance, selectedSegments]);
 
   // Start session with wallet signing (original flow, popup per segment)
   const handleStartSessionWithWallet = useCallback(async () => {
@@ -520,7 +540,7 @@ export default function WatchPage() {
     setError(null);
 
     try {
-      const prepaidSegments = 20;
+      const prepaidSegments = selectedSegments;
       const prepaidAmount = BigInt(video.pricePerSegment) * BigInt(prepaidSegments);
 
       // Check if video has on-chain ID for real contract interaction
@@ -580,7 +600,7 @@ export default function WatchPage() {
       setSessionLoading(false);
     }
     // Note: signAndSubmitTransaction accessed via signerRef to avoid unstable dependency
-  }, [video, account]);
+  }, [video, account, selectedSegments]);
 
   // Start session (delegates based on mode)
   const handleStartSession = useCallback(async () => {
@@ -637,13 +657,13 @@ export default function WatchPage() {
     // Note: signAndSubmitTransaction accessed via signerRef to avoid unstable dependency
   }, [session, video]);
 
-  // Return session key funds to main wallet
+  // Return session key USDC funds to main wallet
   const handleReturnFunds = useCallback(async () => {
     const manager = sessionKeyManagerRef.current;
-    const account = manager?.getAccount();
+    const sessionKeyAccount = manager?.getAccount();
     const state = manager?.getState();
 
-    if (!manager?.isActive() || !account || !state) {
+    if (!manager?.isActive() || !sessionKeyAccount || !state) {
       return null;
     }
 
@@ -652,40 +672,31 @@ export default function WatchPage() {
     try {
       const aptosClient = createAptosClient();
 
-      // Get current balance
-      const currentBalance = await getAccountBalance(state.address);
-      if (currentBalance <= 0n) {
+      // Get current USDC balance
+      const currentUsdcBalance = await getUsdcBalance(state.address);
+      if (currentUsdcBalance <= 0n) {
+        console.log('[ReturnFunds] No USDC balance to return');
         return null;
       }
 
-      // Estimate gas for transfer (10k gas units * 100 gas price = 1M octas max)
-      const maxGasAmount = 10000;
-      const gasUnitPrice = 100;
-      const estimatedGas = BigInt(maxGasAmount * gasUnitPrice);
-      const transferAmount = currentBalance - estimatedGas;
+      console.log('[ReturnFunds] Transferring', currentUsdcBalance.toString(), 'micro-USDC back to', state.fundingWallet);
 
-      if (transferAmount <= 0n) {
-        console.log('[ReturnFunds] Balance too low to cover gas:', currentBalance.toString());
-        return null;
-      }
-
-      console.log('[ReturnFunds] Transferring', transferAmount.toString(), 'octas back to', state.fundingWallet);
-
-      // Transfer back to main wallet with explicit gas limit
+      // Transfer USDC back to main wallet using FA standard
       const txn = await aptosClient.transaction.build.simple({
-        sender: account.accountAddress,
+        sender: sessionKeyAccount.accountAddress,
         data: {
-          function: '0x1::aptos_account::transfer',
-          functionArguments: [state.fundingWallet, transferAmount.toString()],
+          function: '0x1::primary_fungible_store::transfer',
+          typeArguments: ['0x1::fungible_asset::Metadata'],
+          functionArguments: [USDC_METADATA_ADDRESS, state.fundingWallet, currentUsdcBalance.toString()],
         },
         options: {
-          maxGasAmount,
-          gasUnitPrice,
+          maxGasAmount: 10000,
+          gasUnitPrice: 100,
         },
       });
 
       const pendingTxn = await aptosClient.signAndSubmitTransaction({
-        signer: account,
+        signer: sessionKeyAccount,
         transaction: txn,
       });
 
@@ -695,12 +706,12 @@ export default function WatchPage() {
 
       return pendingTxn.hash;
     } catch (err) {
-      console.error('Failed to return funds:', err);
+      console.error('Failed to return USDC funds:', err);
       return null;
     } finally {
       setIsReturningFunds(false);
     }
-  }, [getAccountBalance]);
+  }, [getUsdcBalance]);
 
   // End session
   const handleEndSession = useCallback(async () => {
@@ -883,59 +894,77 @@ export default function WatchPage() {
                       className="absolute inset-0 w-full h-full object-cover opacity-30"
                     />
                   )}
-                  <div className="relative z-10 text-center max-w-md px-4">
-                    <Play className="h-16 w-16 mx-auto mb-4 opacity-75" />
-                    <p className="mb-2 text-lg">Start a session to watch</p>
-                    <p className="text-sm text-gray-400 mb-4">
-                      Prepay for 20 segments (~{formatApt(BigInt(video?.pricePerSegment || '0') * 20n)} APT)
+                  <div className="relative z-10 text-center max-w-sm px-4">
+                    {/* Play icon */}
+                    <Play className="h-10 w-10 mx-auto mb-4 opacity-75" />
+
+                    {/* Segment preset selection */}
+                    <div className="mb-4">
+                      <p className="text-xs text-gray-400 mb-2">Prepay segments</p>
+                      <div className="flex items-center justify-center gap-2">
+                        {SEGMENT_PRESETS.map((count) => (
+                          <button
+                            key={count}
+                            onClick={() => setSelectedSegments(count)}
+                            className={`px-3 py-1.5 text-sm rounded-full transition font-medium ${
+                              selectedSegments === count
+                                ? 'bg-primary text-primary-foreground'
+                                : 'bg-white/10 hover:bg-white/20 text-white/80'
+                            }`}
+                          >
+                            {count}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Cost display */}
+                    <p className="text-sm text-white/70 mb-4">
+                      {formatUsdc(BigInt(video?.pricePerSegment || '0') * BigInt(selectedSegments))} USDC
                     </p>
 
-                    {/* Session mode toggle */}
-                    <div className="flex items-center justify-center gap-2 mb-4 text-sm">
+                    {/* Payment mode toggle */}
+                    <div className="flex items-center justify-center gap-1 mb-4">
                       <button
                         onClick={() => setUseSessionKey(true)}
-                        className={`flex items-center gap-1 px-3 py-1.5 rounded-full transition ${
+                        className={`flex items-center gap-1 px-3 py-1 text-xs rounded-full transition ${
                           useSessionKey
                             ? 'bg-primary text-primary-foreground'
                             : 'bg-white/10 hover:bg-white/20'
                         }`}
                       >
                         <Zap className="h-3 w-3" />
-                        Popup-Free
+                        Quick Pay
                       </button>
                       <button
                         onClick={() => setUseSessionKey(false)}
-                        className={`flex items-center gap-1 px-3 py-1.5 rounded-full transition ${
+                        className={`flex items-center gap-1 px-3 py-1 text-xs rounded-full transition ${
                           !useSessionKey
                             ? 'bg-primary text-primary-foreground'
                             : 'bg-white/10 hover:bg-white/20'
                         }`}
                       >
                         <Wallet className="h-3 w-3" />
-                        Wallet Sign
+                        Manual
                       </button>
                     </div>
 
-                    {useSessionKey && (
-                      <p className="text-xs text-gray-500 mb-4">
-                        One approval to fund session. No popups during playback.
-                      </p>
-                    )}
-
+                    {/* Start button */}
                     <Button
                       size="lg"
                       onClick={handleStartSession}
                       disabled={sessionLoading}
+                      className="w-full"
                     >
                       {sessionLoading ? (
                         <>
                           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          {useSessionKey ? 'Funding Session Key...' : 'Starting...'}
+                          {useSessionKey ? 'Funding...' : 'Starting...'}
                         </>
                       ) : (
                         <>
-                          {useSessionKey ? <Key className="h-4 w-4 mr-2" /> : <Play className="h-4 w-4 mr-2" />}
-                          {useSessionKey ? 'Start (Single Approval)' : 'Start Session'}
+                          <Play className="h-4 w-4 mr-2" />
+                          Start
                         </>
                       )}
                     </Button>
@@ -979,7 +1008,7 @@ export default function WatchPage() {
                 </Badge>
                 <Badge variant="secondary">
                   <DollarSign className="h-3 w-3 mr-1" />
-                  {formatApt(BigInt(video?.pricePerSegment || '0'))}/segment
+                  {formatUsdc(BigInt(video?.pricePerSegment || '0'))}/segment
                 </Badge>
                 <Badge variant="outline">
                   {video?.totalSegments} segments
@@ -1011,7 +1040,7 @@ export default function WatchPage() {
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">Balance</span>
                         <span className="font-semibold">
-                          {formatApt(session.prepaidBalance)} APT
+                          {formatUsdc(session.prepaidBalance)} USDC
                         </span>
                       </div>
                       <div className="flex justify-between text-sm">
@@ -1077,7 +1106,7 @@ export default function WatchPage() {
                           <div className="flex justify-between text-sm">
                             <span className="text-muted-foreground">Key Balance</span>
                             <span className="font-semibold text-green-600">
-                              {formatApt(sessionKeyState.currentBalance)} APT
+                              {formatUsdc(sessionKeyState.currentBalance)} USDC
                             </span>
                           </div>
                           <div className="flex justify-between text-sm">
@@ -1089,13 +1118,13 @@ export default function WatchPage() {
                           <div className="flex justify-between text-sm">
                             <span className="text-muted-foreground">Spent on Segments</span>
                             <span className="font-mono text-xs">
-                              {formatApt(sessionKeyState.segmentSpend)} APT
+                              {formatUsdc(sessionKeyState.segmentSpend)} USDC
                             </span>
                           </div>
                           <div className="flex justify-between text-sm">
                             <span className="text-muted-foreground">Spent on Gas</span>
                             <span className="font-mono text-xs">
-                              {formatApt(sessionKeyState.gasSpend)} APT
+                              {formatUsdc(sessionKeyState.gasSpend)} USDC
                             </span>
                           </div>
                           <Button
@@ -1177,7 +1206,7 @@ export default function WatchPage() {
                               Segment {payment.segmentIndex + 1}
                             </span>
                             <span className="font-mono text-muted-foreground text-xs">
-                              {formatApt(payment.amount)} APT
+                              {formatUsdc(payment.amount)} USDC
                             </span>
                           </div>
                         ))}
@@ -1204,12 +1233,12 @@ export default function WatchPage() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Price per segment</span>
-                  <span>{formatApt(BigInt(video?.pricePerSegment || '0'))} APT</span>
+                  <span>{formatUsdc(BigInt(video?.pricePerSegment || '0'))} USDC</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Total cost</span>
                   <span>
-                    {formatApt(BigInt(video?.pricePerSegment || '0') * BigInt(video?.totalSegments || 0))} APT
+                    {formatUsdc(BigInt(video?.pricePerSegment || '0') * BigInt(video?.totalSegments || 0))} USDC
                   </span>
                 </div>
               </CardContent>

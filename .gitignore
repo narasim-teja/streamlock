@@ -51,6 +51,8 @@ uploads/
 # Move/Aptos
 contracts/build/
 contracts/.aptos/
+contracts/deploy-key*.json
+contracts/deploy-key*.json.pub
 
 # Misc
 *.tsbuildinfo

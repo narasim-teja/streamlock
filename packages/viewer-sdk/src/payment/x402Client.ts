@@ -1,5 +1,7 @@
 /**
  * x402 payment client - supports both raw Account and wallet adapter
+ *
+ * Payment token: USDC (Fungible Asset standard)
  */
 
 import type {
@@ -8,7 +10,7 @@ import type {
   InputGenerateTransactionPayloadData,
   PendingTransactionResponse,
 } from '@aptos-labs/ts-sdk';
-import { StreamLockContract, createStreamLockContract } from '@streamlock/aptos';
+import { StreamLockContract, createStreamLockContract, USDC_METADATA_ADDRESS } from '@streamlock/aptos';
 
 /** Wallet adapter sign and submit function type */
 export type SignAndSubmitTransactionFunction = (
@@ -123,22 +125,22 @@ export class X402PaymentClient {
     }
   }
 
-  /** Get account balance */
+  /** Get USDC balance */
   async getBalance(): Promise<bigint> {
-    const resources = await this.client.getAccountResources({
-      accountAddress: this.accountAddress,
-    });
-
-    const coinStore = resources.find(
-      (r) => r.type === '0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>'
-    );
-
-    if (!coinStore) {
+    try {
+      // Use primary_fungible_store::balance view function for USDC (FA standard)
+      const result = await this.client.view({
+        payload: {
+          function: '0x1::primary_fungible_store::balance',
+          typeArguments: ['0x1::fungible_asset::Metadata'],
+          functionArguments: [this.accountAddress, USDC_METADATA_ADDRESS],
+        },
+      });
+      return BigInt(result[0] as string);
+    } catch {
+      // Account may not have a USDC store yet
       return 0n;
     }
-
-    const data = coinStore.data as { coin: { value: string } };
-    return BigInt(data.coin.value);
   }
 
   /** Get segment price for a video */

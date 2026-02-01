@@ -1,5 +1,8 @@
 /**
  * Session Key Manager - manages ephemeral signing keys for popup-free payments
+ *
+ * Payment token: USDC (Fungible Asset standard)
+ * Gas token: APT (still required for transaction fees)
  */
 
 import { Ed25519PrivateKey, Account } from '@aptos-labs/ts-sdk';
@@ -18,7 +21,7 @@ import {
 /** Default gas buffer percentage */
 const DEFAULT_GAS_BUFFER_PERCENT = 20;
 
-/** Estimated gas per transaction in octas (0.001 APT) */
+/** Estimated gas per transaction in octas (0.001 APT) - gas is always in APT */
 const ESTIMATED_GAS_PER_TX = 100_000n;
 
 /** Session Key Manager */

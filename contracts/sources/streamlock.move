@@ -2,11 +2,14 @@
 ///
 /// This module implements the core protocol for pay-per-second video streaming
 /// with cryptographic commitments for trustless key verification.
+///
+/// Payment Token: USDC (Fungible Asset standard)
 module streamlock::protocol {
     use std::string::String;
     use std::signer;
-    use aptos_framework::coin;
-    use aptos_framework::aptos_coin::AptosCoin;
+    use aptos_framework::fungible_asset::Metadata;
+    use aptos_framework::primary_fungible_store;
+    use aptos_framework::object::{Self, Object};
     use aptos_framework::timestamp;
     use aptos_framework::event;
     use aptos_framework::account::{Self, SignerCapability};
@@ -100,8 +103,12 @@ module streamlock::protocol {
 
     // ============ Constants ============
 
-    /// Minimum segment price in octas (0.0001 APT)
-    const MIN_SEGMENT_PRICE: u64 = 10000;
+    /// USDC Fungible Asset metadata address (Aptos Testnet)
+    /// Get testnet USDC from: https://faucet.circle.com/
+    const USDC_METADATA_ADDRESS: address = @0x69091fbab5f7d635ee7ac5098cf0c1efbe31d68fec0f2cd565e8d168daf52832;
+
+    /// Minimum segment price in USDC micro-units (0.0001 USDC = 100 units, since USDC has 6 decimals)
+    const MIN_SEGMENT_PRICE: u64 = 100;
 
     /// Default session duration (2 hours)
     const DEFAULT_SESSION_DURATION: u64 = 7200;
@@ -182,6 +189,13 @@ module streamlock::protocol {
         sessions: Table<u128, ViewingSession>,
     }
 
+    // ============ Helper Functions ============
+
+    /// Get the USDC metadata object
+    inline fun usdc_metadata(): Object<Metadata> {
+        object::address_to_object<Metadata>(USDC_METADATA_ADDRESS)
+    }
+
     // ============ Initialization ============
 
     /// Initialize the protocol (called once by deployer)
@@ -193,12 +207,14 @@ module streamlock::protocol {
         let admin_addr = signer::address_of(admin);
 
         // Create resource account for escrow
-        let seed = b"streamlock_escrow_v1";
+        let seed = b"streamlock_escrow_v2_usdc";
         let (escrow_signer, signer_cap) = account::create_resource_account(admin, seed);
         let escrow_addr = signer::address_of(&escrow_signer);
 
-        // Register coin store on escrow account
-        coin::register<AptosCoin>(&escrow_signer);
+        // Ensure the escrow account can receive USDC (FA standard)
+        // Primary fungible stores are automatically created on first deposit,
+        // but we explicitly ensure the escrow account exists
+        let _ = &escrow_signer;
 
         // Store escrow capability
         move_to(admin, EscrowCapability {
@@ -375,7 +391,7 @@ module streamlock::protocol {
 
     // ============ Viewer Functions ============
 
-    /// Start a viewing session with prepayment
+    /// Start a viewing session with prepayment (USDC)
     public entry fun start_session(
         viewer: &signer,
         video_id: u128,
@@ -396,9 +412,9 @@ module streamlock::protocol {
         // Calculate prepayment
         let prepaid_amount = prepaid_segments * video.price_per_segment;
 
-        // Get escrow address and transfer funds
+        // Get escrow address and transfer USDC funds
         let escrow_cap = borrow_global<EscrowCapability>(@streamlock);
-        coin::transfer<AptosCoin>(viewer, escrow_cap.escrow_address, prepaid_amount);
+        primary_fungible_store::transfer(viewer, usdc_metadata(), escrow_cap.escrow_address, prepaid_amount);
 
         let now = timestamp::now_seconds();
         let session_id = config.next_session_id;
@@ -503,7 +519,7 @@ module streamlock::protocol {
         });
     }
 
-    /// Top up session with more funds
+    /// Top up session with more USDC funds
     public entry fun top_up_session(
         viewer: &signer,
         session_id: u128,
@@ -524,9 +540,9 @@ module streamlock::protocol {
 
         let additional_amount = additional_segments * video.price_per_segment;
 
-        // Get escrow address and transfer funds
+        // Get escrow address and transfer USDC funds
         let escrow_cap = borrow_global<EscrowCapability>(@streamlock);
-        coin::transfer<AptosCoin>(viewer, escrow_cap.escrow_address, additional_amount);
+        primary_fungible_store::transfer(viewer, usdc_metadata(), escrow_cap.escrow_address, additional_amount);
 
         session.prepaid_balance = session.prepaid_balance + additional_amount;
 
@@ -545,7 +561,7 @@ module streamlock::protocol {
         });
     }
 
-    /// End session and refund unused balance
+    /// End session and refund unused USDC balance
     public entry fun end_session(
         viewer: &signer,
         session_id: u128
@@ -569,11 +585,11 @@ module streamlock::protocol {
         session.is_active = false;
         session.prepaid_balance = 0;
 
-        // Refund unused balance from escrow
+        // Refund unused USDC balance from escrow
         if (refund_amount > 0) {
             let escrow_cap = borrow_global<EscrowCapability>(@streamlock);
             let escrow_signer = account::create_signer_with_capability(&escrow_cap.signer_cap);
-            coin::transfer<AptosCoin>(&escrow_signer, viewer_addr, refund_amount);
+            primary_fungible_store::transfer(&escrow_signer, usdc_metadata(), viewer_addr, refund_amount);
         };
 
         // Update video views
@@ -591,7 +607,7 @@ module streamlock::protocol {
         });
     }
 
-    /// Withdraw creator earnings
+    /// Withdraw creator USDC earnings
     public entry fun withdraw_earnings(
         creator: &signer
     ) acquires EscrowCapability, Creator {
@@ -605,10 +621,10 @@ module streamlock::protocol {
 
         creator_profile.pending_withdrawal = 0;
 
-        // Transfer from escrow to creator
+        // Transfer USDC from escrow to creator
         let escrow_cap = borrow_global<EscrowCapability>(@streamlock);
         let escrow_signer = account::create_signer_with_capability(&escrow_cap.signer_cap);
-        coin::transfer<AptosCoin>(&escrow_signer, creator_addr, amount);
+        primary_fungible_store::transfer(&escrow_signer, usdc_metadata(), creator_addr, amount);
 
         let now = timestamp::now_seconds();
         event::emit(EarningsWithdrawnEvent {
@@ -618,7 +634,7 @@ module streamlock::protocol {
         });
     }
 
-    /// Withdraw protocol fees (admin only)
+    /// Withdraw protocol fees in USDC (admin only)
     public entry fun withdraw_protocol_fees(
         admin: &signer
     ) acquires GlobalConfig, EscrowCapability {
@@ -633,10 +649,10 @@ module streamlock::protocol {
 
         config.total_protocol_fees = 0;
 
-        // Transfer from escrow to treasury
+        // Transfer USDC from escrow to treasury
         let escrow_cap = borrow_global<EscrowCapability>(@streamlock);
         let escrow_signer = account::create_signer_with_capability(&escrow_cap.signer_cap);
-        coin::transfer<AptosCoin>(&escrow_signer, config.treasury, amount);
+        primary_fungible_store::transfer(&escrow_signer, usdc_metadata(), config.treasury, amount);
     }
 
     // ============ View Functions ============
@@ -739,5 +755,11 @@ module streamlock::protocol {
     public fun get_protocol_fees(): u64 acquires GlobalConfig {
         let config = borrow_global<GlobalConfig>(@streamlock);
         config.total_protocol_fees
+    }
+
+    #[view]
+    /// Get USDC metadata address (for client-side reference)
+    public fun get_usdc_metadata_address(): address {
+        USDC_METADATA_ADDRESS
     }
 }
