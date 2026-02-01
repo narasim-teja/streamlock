@@ -46,6 +46,7 @@ yarn-error.log*
 
 # Storage (local development)
 storage/
+!packages/*/src/storage/
 uploads/
 
 # Move/Aptos
