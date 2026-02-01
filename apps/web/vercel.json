@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "cd ../.. && turbo run build --force",
   "functions": {
     "app/api/upload/route.ts": {
       "maxDuration": 60,
