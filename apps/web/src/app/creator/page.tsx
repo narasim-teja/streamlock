@@ -135,7 +135,7 @@ export default function CreatorDashboard() {
       <header className="border-b">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
           <Link href="/" className="text-2xl font-bold text-primary">
-            StreamLock
+            streamlock
           </Link>
           <nav className="flex items-center gap-4">
             <Link href="/creator" className="font-medium">
@@ -146,12 +146,6 @@ export default function CreatorDashboard() {
               className="text-muted-foreground hover:text-foreground"
             >
               Upload
-            </Link>
-            <Link
-              href="/browse"
-              className="text-muted-foreground hover:text-foreground"
-            >
-              Browse
             </Link>
             <ConnectButton />
           </nav>

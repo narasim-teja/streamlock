@@ -805,7 +805,7 @@ export default function WatchPage() {
         <header className="border-b">
           <div className="container mx-auto px-4 py-4 flex justify-between items-center">
             <Link href="/" className="text-2xl font-bold text-primary">
-              StreamLock
+              streamlock
             </Link>
             <ConnectButton />
           </div>
@@ -833,7 +833,7 @@ export default function WatchPage() {
           <CardContent className="pt-6 text-center">
             <AlertCircle className="h-12 w-12 mx-auto mb-4 text-destructive" />
             <p className="text-destructive mb-4">{error}</p>
-            <Link href="/browse">
+            <Link href="/">
               <Button variant="outline">Browse Videos</Button>
             </Link>
           </CardContent>
@@ -848,12 +848,9 @@ export default function WatchPage() {
       <header className="border-b">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
           <Link href="/" className="text-2xl font-bold text-primary">
-            StreamLock
+            streamlock
           </Link>
           <nav className="flex items-center gap-4">
-            <Link href="/browse" className="text-muted-foreground hover:text-foreground">
-              Browse
-            </Link>
             <Link href="/creator" className="text-muted-foreground hover:text-foreground">
               Studio
             </Link>

@@ -1,24 +1,37 @@
-# StreamLock
+# streamlock
 
-Trustless pay-per-second video streaming protocol on Aptos blockchain using the x402 payment standard.
+**Every second counts. Only pay for what you watch.**
 
-## Overview
+Trustless pay-per-view video streaming on Aptos. Viewers pay per segment watched. Creators get paid instantly. No subscriptions, no middlemen.
 
-StreamLock enables creators to monetize video content with per-second granularity. Videos are encrypted segment-by-segment, with decryption keys released only after on-chain payment verification. Cryptographic commitments (Merkle trees) ensure viewers can verify they received correct keys without trusting the server.
+## How It Works
 
-## Architecture
+1. **Upload** — Creator uploads video → encrypted into 5-second segments → Merkle tree commitment stored on-chain
+2. **Watch** — Viewer selects segments to prepay → funds escrowed on-chain → playback begins
+3. **Pay** — Each segment payment releases decryption key with cryptographic proof
+4. **Verify** — Merkle proofs ensure correct keys → unused balance refunded when done
+
+## Tech Stack
+
+- **Blockchain**: Aptos (Move smart contracts, USDC payments)
+- **Video**: HLS.js + FFmpeg (AES-128-CBC encryption per segment)
+- **Crypto**: Merkle trees for key commitments, HKDF for key derivation
+- **Web**: Next.js 15, Tailwind CSS, shadcn/ui
+- **Runtime**: Bun + Turborepo monorepo
+
+## Project Structure
 
 ```
 streamlock/
-├── contracts/           # Move smart contracts (Aptos)
+├── contracts/           # Move smart contract
 ├── packages/
 │   ├── common/          # Shared types, constants, utilities
 │   ├── crypto/          # AES encryption, HKDF, Merkle trees
-│   ├── aptos/           # Blockchain client & contract interactions
-│   ├── creator-sdk/     # Video processing & key server
-│   └── viewer-sdk/      # Playback with integrated payments
+│   ├── aptos/           # Blockchain client & contract SDK
+│   ├── creator-sdk/     # Video processing & HLS packaging
+│   └── viewer-sdk/      # x402 payment flow & HLS playback
 └── apps/
-    └── web/             # Next.js demo application
+    └── web/             # Next.js application
 ```
 
 ## Quick Start
@@ -26,40 +39,18 @@ streamlock/
 ### Prerequisites
 
 - [Bun](https://bun.sh/) v1.1+
-- [Aptos CLI](https://aptos.dev/cli-tools/aptos-cli-tool/install-aptos-cli) (for contract deployment)
-- FFmpeg (for video processing)
-- Petra or Martian wallet
+- [Aptos CLI](https://aptos.dev/cli-tools/aptos-cli-tool/install-aptos-cli)
+- Petra wallet
 
-### Installation
+### Setup
 
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd stream-lock
-
 # Install dependencies
 bun install
 
 # Copy environment file
-cp apps/web/.env.local.example apps/web/.env.local
-# Edit .env.local with your values
-```
+cp apps/web/.env.example apps/web/.env.local
 
-### Deploy Contract (Testnet)
-
-```bash
-# Set your deployer private key
-export APTOS_PRIVATE_KEY=your-private-key
-
-# Deploy to testnet
-bun run deploy:contract --network=testnet
-
-# Copy the contract address to .env.local
-```
-
-### Run Development Server
-
-```bash
 # Push database schema
 bun run db:push
 
@@ -67,54 +58,56 @@ bun run db:push
 bun run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to view the app.
+### Environment Variables
 
-## How It Works
+```env
+# Aptos
+NEXT_PUBLIC_APTOS_NETWORK=testnet
+NEXT_PUBLIC_CONTRACT_ADDRESS=0x...
 
-1. **Creator uploads video** → SDK encrypts segments → Generates Merkle tree → Registers on-chain with commitment root
-2. **Viewer starts session** → Deposits prepaid APT to escrow → Receives session ID
-3. **Viewer requests key** → Server returns 402 → Viewer pays on-chain → Server verifies → Releases key + proof
-4. **Viewer verifies proof** → Checks against on-chain commitment → Decrypts segment → Plays video
-5. **Session ends** → Unused balance refunded → Creator earnings released
+# USDC (Testnet)
+NEXT_PUBLIC_USDC_METADATA_ADDRESS=0x69091fbab5f7d635ee7ac5098cf0c1efbe31d68fec0f2cd565e8d168daf52832
+
+# Storage (Supabase)
+SUPABASE_URL=https://xxx.supabase.co
+SUPABASE_ANON_KEY=xxx
+SUPABASE_SERVICE_KEY=xxx
+
+# Database
+DATABASE_URL=file:./local.db
+```
+
+### Deploy Contract
+
+```bash
+cd contracts
+aptos move publish --named-addresses streamlock=default
+```
 
 ## Key Features
 
-- **Trustless**: Merkle proofs ensure viewers get correct decryption keys
-- **Fair Pricing**: Pay only for what you watch (5-second segments)
-- **Instant Payments**: Creators receive payments in real-time on Aptos
-- **x402 Standard**: HTTP 402 native payment flow for seamless UX
+- **Session Keys** — Popup-free payments using ephemeral accounts
+- **x402 Protocol** — HTTP 402 payment flow for segment key access
+- **USDC Payments** — Stable pricing using Circle's USDC on Aptos
+- **Merkle Proofs** — Cryptographic verification of decryption keys
+- **Instant Settlement** — Creators withdraw earnings anytime
 
-## Tech Stack
-
-- **Blockchain**: Aptos (Move smart contracts)
-- **Runtime**: Bun
-- **Build**: Turborepo
-- **Web**: Next.js 14, Tailwind CSS
-- **Database**: SQLite with Drizzle ORM
-- **Crypto**: @noble/hashes (HKDF, SHA-256)
-- **Video**: HLS.js, FFmpeg
-
-## Project Structure
-
-### Packages
+## Packages
 
 | Package | Description |
 |---------|-------------|
-| `@streamlock/common` | Shared types, constants, error classes |
-| `@streamlock/crypto` | AES-128-CBC encryption, HKDF key derivation, Merkle trees |
-| `@streamlock/aptos` | Aptos client wrapper, contract interaction methods |
-| `@streamlock/creator-sdk` | Video segmentation, encryption, HLS packaging |
-| `@streamlock/viewer-sdk` | x402 key loader, payment client, React components |
+| `@streamlock/common` | Types, constants, formatting utilities |
+| `@streamlock/crypto` | AES-128-CBC, HKDF key derivation, Merkle trees |
+| `@streamlock/aptos` | Contract client, USDC helpers, event parsing |
+| `@streamlock/creator-sdk` | FFmpeg segmentation, encryption, HLS packaging |
+| `@streamlock/viewer-sdk` | x402 key loader, session key manager, React hooks |
 
-### Smart Contract
+## Smart Contract
 
-The Move contract handles:
-- Creator registration
-- Video registration with Merkle commitment
-- Viewing sessions with escrow
-- Per-segment payments
-- Earnings withdrawal
+The Move contract (`contracts/sources/streamlock.move`) handles:
 
-## License
-
-MIT
+- Creator/video registration with Merkle root commitment
+- Viewing sessions with USDC escrow
+- Per-segment payment verification
+- Creator earnings withdrawal
+- Protocol fee collection
