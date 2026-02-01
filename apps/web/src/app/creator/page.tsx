@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { formatApt } from '@streamlock/common';
+import { formatUsdc } from '@streamlock/aptos';
 import {
   Play,
   Upload,
@@ -205,7 +205,7 @@ export default function CreatorDashboard() {
                     <Skeleton className="h-9 w-24" />
                   ) : (
                     <p className="text-3xl font-bold">
-                      {formatApt(BigInt(earnings?.totalEarnings || '0'))} APT
+                      {formatUsdc(BigInt(earnings?.totalEarnings || '0'))} USDC
                     </p>
                   )}
                 </CardContent>
@@ -224,7 +224,7 @@ export default function CreatorDashboard() {
                   ) : (
                     <>
                       <p className="text-3xl font-bold">
-                        {formatApt(BigInt(earnings?.pendingWithdrawal || '0'))} APT
+                        {formatUsdc(BigInt(earnings?.pendingWithdrawal || '0'))} USDC
                       </p>
                       <Button
                         variant="outline"
@@ -361,7 +361,7 @@ export default function CreatorDashboard() {
                           <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
                             <span className="flex items-center gap-1">
                               <DollarSign className="h-3 w-3" />
-                              {formatApt(BigInt(video.pricePerSegment))}/seg
+                              {formatUsdc(BigInt(video.pricePerSegment))} USDC/seg
                             </span>
                             <span className="flex items-center gap-1">
                               <Clock className="h-3 w-3" />

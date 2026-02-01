@@ -2,7 +2,8 @@
  * Balance display component
  */
 
-import { formatApt, formatSegmentCount } from '@streamlock/common';
+import { formatSegmentCount } from '@streamlock/common';
+import { formatUsdc } from '@streamlock/aptos';
 
 /** Balance display props */
 export interface BalanceDisplayProps {
@@ -40,7 +41,7 @@ export function BalanceDisplay({
         }}
       >
         <span>Remaining Balance:</span>
-        <span style={{ fontWeight: 'bold' }}>{formatApt(balance)} APT</span>
+        <span style={{ fontWeight: 'bold' }}>{formatUsdc(balance)} USDC</span>
       </div>
 
       <div
@@ -51,7 +52,7 @@ export function BalanceDisplay({
         }}
       >
         <span>Total Paid:</span>
-        <span style={{ fontWeight: 'bold' }}>{formatApt(totalPaid)} APT</span>
+        <span style={{ fontWeight: 'bold' }}>{formatUsdc(totalPaid)} USDC</span>
       </div>
 
       <div

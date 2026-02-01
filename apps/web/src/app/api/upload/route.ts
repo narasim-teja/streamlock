@@ -14,7 +14,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db, schema } from '@/lib/db';
 import { getStorageProvider } from '@/lib/storage';
 import { serializeMerkleTree } from '@streamlock/crypto';
-import { aptToOctas } from '@streamlock/common';
+import { usdcToMicroUsdc } from '@streamlock/common';
 import { getContractAddress } from '@/lib/aptos';
 import { processVideo } from '@/lib/video-processor';
 import { uploadHLSPackage, uploadThumbnail } from '@/lib/hls-upload';
@@ -67,8 +67,8 @@ export async function POST(request: NextRequest) {
       thumbnailUri = await uploadThumbnail(storage, videoId, thumbnailFile);
     }
 
-    // 4. Convert price to octas (bigint)
-    const priceInOctas = aptToOctas(pricePerSegment);
+    // 4. Convert price to micro-USDC (6 decimals)
+    const priceInMicroUsdc = usdcToMicroUsdc(pricePerSegment);
 
     // 5. Ensure creator exists in database (create if not)
     const existingCreator = await db.query.creators.findFirst({
@@ -94,7 +94,7 @@ export async function POST(request: NextRequest) {
       thumbnailUri,
       durationSeconds: result.durationSeconds,
       totalSegments: result.totalSegments,
-      pricePerSegment: priceInOctas,
+      pricePerSegment: priceInMicroUsdc,
       merkleRoot: result.merkleRoot,
       masterSecret: result.masterSecret,
       isActive: true,
@@ -119,7 +119,7 @@ export async function POST(request: NextRequest) {
         result.durationSeconds.toString(), // duration_seconds: u64
         result.totalSegments.toString(), // total_segments: u64
         Array.from(Buffer.from(result.merkleRoot, 'hex')), // key_commitment_root: vector<u8>
-        priceInOctas.toString(), // price_per_segment: u64
+        priceInMicroUsdc.toString(), // price_per_segment: u64 (in micro-USDC)
       ],
     };
 
@@ -132,7 +132,7 @@ export async function POST(request: NextRequest) {
         totalSegments: result.totalSegments,
         durationSeconds: result.durationSeconds,
         merkleRoot: result.merkleRoot,
-        pricePerSegment: priceInOctas.toString(),
+        pricePerSegment: priceInMicroUsdc.toString(),
       },
       // Return payload for client to sign on-chain registration
       requiresSignature: true,

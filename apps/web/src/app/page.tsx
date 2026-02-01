@@ -65,7 +65,7 @@ export default function Home() {
               <div className="text-4xl mb-4">2</div>
               <h4 className="text-xl font-semibold mb-2">Prepay & Watch</h4>
               <p className="text-muted-foreground">
-                Viewers deposit APT to start watching. Each 5-second segment
+                Viewers deposit USDC to start watching. Each 5-second segment
                 payment releases the decryption key with proof.
               </p>
             </div>

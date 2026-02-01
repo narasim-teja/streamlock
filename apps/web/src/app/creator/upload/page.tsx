@@ -387,7 +387,7 @@ export default function UploadPage() {
                 <div className="space-y-2">
                   <Label htmlFor="price" className="flex items-center gap-2">
                     <DollarSign className="h-4 w-4" />
-                    Price per Segment (APT)
+                    Price per Segment (USDC)
                   </Label>
                   <Input
                     id="price"
@@ -400,7 +400,7 @@ export default function UploadPage() {
                     required
                   />
                   <p className="text-sm text-muted-foreground">
-                    Each segment is ~5 seconds. Minimum price: 0.0001 APT
+                    Each segment is ~5 seconds. Minimum price: 0.0001 USDC
                   </p>
                 </div>
 

@@ -2,7 +2,7 @@
  * Payment overlay component
  */
 
-import { formatApt } from '@streamlock/common';
+import { formatUsdc } from '@streamlock/aptos';
 
 /** Payment overlay props */
 export interface PaymentOverlayProps {
@@ -42,7 +42,7 @@ export function PaymentOverlay({
       }}
     >
       <div style={{ marginBottom: '5px' }}>
-        Balance: {formatApt(remainingBalance)} APT
+        Balance: {formatUsdc(remainingBalance)} USDC
       </div>
       <div style={{ marginBottom: '5px' }}>
         ~{segmentsRemaining} segments remaining

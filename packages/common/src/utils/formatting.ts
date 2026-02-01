@@ -2,7 +2,7 @@
  * Display formatting utilities
  */
 
-import { OCTAS_PER_APT } from '../constants.js';
+import { OCTAS_PER_APT, USDC_UNITS_PER_USDC } from '../constants.js';
 
 /** Format octas to APT with specified decimals */
 export function formatApt(octas: bigint, decimals: number = 4): string {
@@ -18,6 +18,16 @@ export function aptToOctas(apt: number): bigint {
 /** Convert octas to APT */
 export function octasToApt(octas: bigint): number {
   return Number(octas) / Number(OCTAS_PER_APT);
+}
+
+/** Convert USDC to micro-USDC (6 decimals) */
+export function usdcToMicroUsdc(usdc: number): bigint {
+  return BigInt(Math.floor(usdc * Number(USDC_UNITS_PER_USDC)));
+}
+
+/** Convert micro-USDC to USDC */
+export function microUsdcToUsdc(microUsdc: bigint): number {
+  return Number(microUsdc) / Number(USDC_UNITS_PER_USDC);
 }
 
 /** Format duration in seconds to human readable */

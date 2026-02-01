@@ -8,7 +8,8 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Avatar, AvatarFallback } from '@/components/ui/Avatar';
-import { formatApt, truncateAddress } from '@streamlock/common';
+import { truncateAddress } from '@streamlock/common';
+import { formatUsdc } from '@streamlock/aptos';
 import {
   Play,
   Clock,
@@ -225,7 +226,7 @@ export default function BrowsePage() {
                     {/* Price */}
                     <Badge variant="outline" className="flex items-center gap-1">
                       <DollarSign className="h-3 w-3" />
-                      {formatApt(BigInt(video.pricePerSegment))}/seg
+                      {formatUsdc(BigInt(video.pricePerSegment))} USDC/seg
                     </Badge>
                   </CardFooter>
                 </Card>
