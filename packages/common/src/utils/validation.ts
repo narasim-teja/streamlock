@@ -2,7 +2,7 @@
  * Input validation utilities
  */
 
-import { isValidHex } from './hex.js';
+import { isValidHex } from './hex';
 
 /** Validate Aptos address format */
 export function isValidAptosAddress(address: string): boolean {

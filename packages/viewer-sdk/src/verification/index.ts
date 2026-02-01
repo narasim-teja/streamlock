@@ -2,5 +2,5 @@
  * Verification exports
  */
 
-export * from './merkle.js';
-export * from './commitment.js';
+export * from './merkle';
+export * from './commitment';

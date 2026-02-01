@@ -4,7 +4,7 @@
 
 import { Aptos, AptosConfig, Network } from '@aptos-labs/ts-sdk';
 import { NETWORKS, type NetworkName } from '@streamlock/common';
-import type { NetworkConfig } from './types.js';
+import type { NetworkConfig } from './types';
 
 /** Create Aptos client for a specific network */
 export function createAptosClient(network: NetworkName): Aptos {

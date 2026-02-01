@@ -3,7 +3,7 @@
  */
 
 import type { Event } from '@aptos-labs/ts-sdk';
-import type { ContractEvent } from './types.js';
+import type { ContractEvent } from './types';
 
 /** Event type constants */
 export const EVENT_TYPES = {

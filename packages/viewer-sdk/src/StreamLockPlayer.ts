@@ -20,19 +20,19 @@ import {
   SESSION_EXPIRY_SECONDS,
 } from '@streamlock/common';
 import { StreamLockContract, createStreamLockContract } from '@streamlock/aptos';
-import { SessionManager } from './session/manager.js';
-import { SessionKeyManager } from './session/sessionKeyManager.js';
-import type { SessionKeyStorage } from './session/sessionKeyTypes.js';
+import { SessionManager } from './session/manager';
+import { SessionKeyManager } from './session/sessionKeyManager';
+import type { SessionKeyStorage } from './session/sessionKeyTypes';
 import type {
   SessionKeyConfig,
   LiveSessionKeyState,
-} from './session/sessionKeyTypes.js';
+} from './session/sessionKeyTypes';
 import {
   X402PaymentClient,
   type SignAndSubmitTransactionFunction,
-} from './payment/x402Client.js';
-import { X402KeyLoader } from './playback/hlsLoader.js';
-import { createX402LoaderClass } from './playback/X402HlsLoader.js';
+} from './payment/x402Client';
+import { X402KeyLoader } from './playback/hlsLoader';
+import { createX402LoaderClass } from './playback/X402HlsLoader';
 
 /** Wallet adapter sign and submit function type (re-exported for convenience) */
 export type { SignAndSubmitTransactionFunction };

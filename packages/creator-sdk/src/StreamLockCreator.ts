@@ -24,11 +24,11 @@ import {
   findEvent,
   EVENT_TYPES,
 } from '@streamlock/aptos';
-import { segmentVideo } from './video/segmenter.js';
-import { encryptVideoSegments } from './video/encryptor.js';
-import { generateHLSPackage } from './video/packager.js';
-import type { StorageProvider } from './storage/provider.js';
-import { createKeyHandler, type KeyHandler } from './server/keyHandler.js';
+import { segmentVideo } from './video/segmenter';
+import { encryptVideoSegments } from './video/encryptor';
+import { generateHLSPackage } from './video/packager';
+import type { StorageProvider } from './storage/provider';
+import { createKeyHandler, type KeyHandler } from './server/keyHandler';
 
 /** Creator SDK configuration */
 export interface StreamLockCreatorConfig {

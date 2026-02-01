@@ -3,7 +3,7 @@
  * Aptos blockchain interactions for StreamLock protocol
  */
 
-export * from './client.js';
-export * from './contract.js';
-export * from './events.js';
-export * from './types.js';
+export * from './client';
+export * from './contract';
+export * from './events';
+export * from './types';

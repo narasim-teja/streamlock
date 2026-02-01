@@ -12,11 +12,11 @@ import type {
   SessionKeyState,
   LiveSessionKeyState,
   SessionKeyStorage,
-} from './sessionKeyTypes.js';
+} from './sessionKeyTypes';
 import {
   SESSION_KEY_STORAGE_KEY,
   SESSION_STATE_STORAGE_KEY,
-} from './sessionKeyTypes.js';
+} from './sessionKeyTypes';
 
 /** Default gas buffer percentage */
 const DEFAULT_GAS_BUFFER_PERCENT = 20;

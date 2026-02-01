@@ -2,6 +2,6 @@
  * Utility exports
  */
 
-export * from './hex.js';
-export * from './validation.js';
-export * from './formatting.js';
+export * from './hex';
+export * from './validation';
+export * from './formatting';

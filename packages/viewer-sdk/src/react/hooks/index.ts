@@ -2,9 +2,9 @@
  * React hooks exports
  */
 
-export * from './useSession.js';
-export * from './usePayment.js';
-export * from './usePlayback.js';
-export * from './useWalletSession.js';
-export * from './useStreamLockPlayer.js';
-export * from './useSessionKeySession.js';
+export * from './useSession';
+export * from './usePayment';
+export * from './usePlayback';
+export * from './useWalletSession';
+export * from './useStreamLockPlayer';
+export * from './useSessionKeySession';

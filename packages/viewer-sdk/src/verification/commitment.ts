@@ -5,7 +5,7 @@
 import type { Aptos } from '@aptos-labs/ts-sdk';
 import type { MerkleProof } from '@streamlock/common';
 import { createStreamLockContract } from '@streamlock/aptos';
-import { verifyMerkleProof } from './merkle.js';
+import { verifyMerkleProof } from './merkle';
 
 /**
  * Get on-chain commitment (Merkle root) for a video

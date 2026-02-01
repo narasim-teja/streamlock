@@ -3,7 +3,7 @@
  * Creator SDK for video processing and key server utilities
  */
 
-export * from './StreamLockCreator.js';
-export * from './video/index.js';
-export * from './storage/index.js';
-export * from './server/index.js';
+export * from './StreamLockCreator';
+export * from './video/index';
+export * from './storage/index';
+export * from './server/index';

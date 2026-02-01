@@ -3,11 +3,11 @@
  * Viewer SDK for playback with integrated payments
  */
 
-export * from './StreamLockPlayer.js';
-export * from './session/index.js';
-export * from './playback/index.js';
-export * from './payment/index.js';
-export * from './verification/index.js';
+export * from './StreamLockPlayer';
+export * from './session/index';
+export * from './playback/index';
+export * from './payment/index';
+export * from './verification/index';
 
 // React components and hooks (optional peer dependency)
-export * from './react/index.js';
+export * from './react/index';

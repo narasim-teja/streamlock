@@ -2,7 +2,7 @@
  * React component exports
  */
 
-export * from './Player.js';
-export * from './PaymentOverlay.js';
-export * from './BalanceDisplay.js';
-export * from './hooks/index.js';
+export * from './Player';
+export * from './PaymentOverlay';
+export * from './BalanceDisplay';
+export * from './hooks/index';

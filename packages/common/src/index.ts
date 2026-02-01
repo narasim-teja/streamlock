@@ -3,7 +3,7 @@
  * Shared types, constants, and utilities for StreamLock protocol
  */
 
-export * from './types.js';
-export * from './constants.js';
-export * from './errors.js';
-export * from './utils/index.js';
+export * from './types';
+export * from './constants';
+export * from './errors';
+export * from './utils/index';

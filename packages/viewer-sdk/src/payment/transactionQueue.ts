@@ -6,7 +6,7 @@ import type {
   Aptos,
   InputGenerateTransactionPayloadData,
 } from '@aptos-labs/ts-sdk';
-import type { SignAndSubmitTransactionFunction } from './x402Client.js';
+import type { SignAndSubmitTransactionFunction } from './x402Client';
 
 /** Transaction status */
 export type TransactionStatus =

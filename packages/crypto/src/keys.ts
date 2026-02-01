@@ -12,7 +12,7 @@ import {
   AES_IV_LENGTH,
   MASTER_SECRET_LENGTH,
 } from '@streamlock/common';
-import { generateSecureRandom } from './random.js';
+import { generateSecureRandom } from './random';
 
 /**
  * Generate a cryptographically secure master secret

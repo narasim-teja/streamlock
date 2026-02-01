@@ -2,5 +2,5 @@
  * Payment exports
  */
 
-export * from './x402Client.js';
-export * from './transactionQueue.js';
+export * from './x402Client';
+export * from './transactionQueue';

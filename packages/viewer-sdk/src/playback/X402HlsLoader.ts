@@ -17,7 +17,7 @@ import type {
   LoaderResponse,
   HlsConfig,
 } from 'hls.js';
-import type { X402KeyLoader } from './hlsLoader.js';
+import type { X402KeyLoader } from './hlsLoader';
 
 /** Configuration for X402HlsLoader */
 export interface X402HlsLoaderConfig {

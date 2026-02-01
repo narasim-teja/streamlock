@@ -21,8 +21,8 @@ import type {
   OnChainVideo,
   OnChainSession,
   OnChainCreator,
-} from './types.js';
-import { parseTransactionEvents } from './events.js';
+} from './types';
+import { parseTransactionEvents } from './events';
 
 const MODULE_NAME = 'protocol';
 
