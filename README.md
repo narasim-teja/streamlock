@@ -4,6 +4,10 @@
 
 Trustless pay-per-view video streaming on Aptos. Viewers pay per segment watched. Creators get paid instantly. No subscriptions, no middlemen.
 
+## Architecture
+
+![streamlock Architecture](assets/architecture.png)
+
 ## How It Works
 
 1. **Upload** — Creator uploads video → encrypted into 5-second segments → Merkle tree commitment stored on-chain
@@ -111,3 +115,11 @@ The Move contract (`contracts/sources/streamlock.move`) handles:
 - Per-segment payment verification
 - Creator earnings withdrawal
 - Protocol fee collection
+
+**Deployed Contract (Testnet):**
+
+```text
+0x262f56571e44d2b5564cbffca16ded7067ad5b1205a8c3adf46296776294cb2f
+```
+
+[View on Aptos Explorer](https://explorer.aptoslabs.com/account/0x262f56571e44d2b5564cbffca16ded7067ad5b1205a8c3adf46296776294cb2f?network=testnet)
